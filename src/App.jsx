@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, Volume2, PauseCircle, PlayCircle, StopCircle, Mic } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
@@ -62,6 +62,14 @@ export default function App() {
   const [newChapterContent, setNewChapterContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  // --- STATE AUDIO (MỚI THÊM) ---
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [voices, setVoices] = useState([]);
+  const [selectedVoice, setSelectedVoice] = useState(null);
+  const [speechRate, setSpeechRate] = useState(1);
+  const speechSynthRef = useRef(window.speechSynthesis);
+
   // --- INIT ---
   useEffect(() => {
     if (!auth) return;
@@ -87,6 +95,38 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // --- INIT AUDIO VOICES (MỚI THÊM) ---
+  useEffect(() => {
+    const loadVoices = () => {
+      const availVoices = speechSynthRef.current.getVoices();
+      setVoices(availVoices);
+      // Ưu tiên giọng Microsoft Tiếng Việt, sau đó đến giọng Tiếng Việt bất kỳ, cuối cùng là giọng đầu tiên
+      const vnVoice = availVoices.find(v => v.lang.includes('vi') && v.name.includes('Microsoft')) 
+                   || availVoices.find(v => v.name.includes('Microsoft') && (v.lang.includes('vi') || v.lang.includes('en')))
+                   || availVoices.find(v => v.lang.includes('vi'));
+      setSelectedVoice(vnVoice || availVoices[0]);
+    };
+
+    loadVoices();
+    if (speechSynthRef.current.onvoiceschanged !== undefined) {
+      speechSynthRef.current.onvoiceschanged = loadVoices;
+    }
+
+    // Cleanup audio khi unmount
+    return () => {
+      if (speechSynthRef.current) speechSynthRef.current.cancel();
+    };
+  }, []);
+
+  // Dừng đọc khi đổi chương hoặc thoát reader
+  useEffect(() => {
+    if (speechSynthRef.current) {
+      speechSynthRef.current.cancel();
+      setIsSpeaking(false);
+      setIsPaused(false);
+    }
+  }, [currentChapterIndex, view]);
 
   const saveProgress = (novelId, chapterIndex) => {
     const newProgress = { ...readingProgress, [novelId]: chapterIndex };
@@ -269,6 +309,37 @@ export default function App() {
     setSelectedNovel(null);
     setChapters([]);
     setView('home');
+  };
+
+  // --- ACTIONS: AUDIO (MỚI THÊM) ---
+  const handleToggleSpeak = () => {
+    if (!chapters[currentChapterIndex]) return;
+
+    if (isSpeaking && !isPaused) {
+      speechSynthRef.current.pause();
+      setIsPaused(true);
+    } else if (isPaused) {
+      speechSynthRef.current.resume();
+      setIsPaused(false);
+    } else {
+      const textToSpeak = chapters[currentChapterIndex].content;
+      const utterance = new SpeechSynthesisUtterance(textToSpeak);
+      if (selectedVoice) utterance.voice = selectedVoice;
+      utterance.rate = speechRate;
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        setIsPaused(false);
+      };
+      speechSynthRef.current.speak(utterance);
+      setIsSpeaking(true);
+      setIsPaused(false);
+    }
+  };
+
+  const handleStopSpeak = () => {
+    speechSynthRef.current.cancel();
+    setIsSpeaking(false);
+    setIsPaused(false);
   };
 
   // --- STYLES ---
@@ -500,10 +571,51 @@ export default function App() {
 
         {view === 'reader' && selectedNovel && chapters[currentChapterIndex] && (
           <div className="max-w-3xl mx-auto animate-fade-in pb-20">
-             <div className="sticky top-16 z-30 flex justify-between items-center mb-8 border-b border-inherit bg-inherit py-3 opacity-95">
-                <button onClick={() => setView('detail')} className="flex items-center gap-1 hover:text-blue-500 opacity-70 hover:opacity-100 transition-all"><ChevronLeft size={20} /> Mục lục</button>
-                <button onClick={() => setShowChapterList(true)} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"><List size={20} /> <span className="hidden sm:inline font-medium">Danh sách</span></button>
+             <div className="sticky top-16 z-30 flex flex-col md:flex-row justify-between items-center mb-4 border-b border-inherit bg-inherit py-3 opacity-95 gap-3">
+                <div className="flex items-center gap-2 w-full md:w-auto">
+                    <button onClick={() => setView('detail')} className="flex items-center gap-1 hover:text-blue-500 opacity-70 hover:opacity-100 transition-all"><ChevronLeft size={20} /> Mục lục</button>
+                    <button onClick={() => setShowChapterList(true)} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"><List size={20} /> <span className="hidden sm:inline font-medium">Danh sách</span></button>
+                </div>
+                
+                {/* --- AUDIO CONTROLS (MỚI THÊM) --- */}
+                <div className="flex items-center gap-2 bg-black/5 dark:bg-white/5 p-1 rounded-lg w-full md:w-auto justify-center">
+                    <button onClick={handleToggleSpeak} className="p-2 rounded-full hover:bg-blue-500/20 text-blue-500 transition-colors" title={isSpeaking && !isPaused ? "Tạm dừng" : "Đọc audio"}>
+                       {isSpeaking && !isPaused ? <PauseCircle size={24} /> : <PlayCircle size={24} />}
+                    </button>
+                    <button onClick={handleStopSpeak} className="p-2 rounded-full hover:bg-red-500/20 text-red-500 transition-colors" title="Dừng đọc">
+                       <StopCircle size={24} />
+                    </button>
+                    <div className="h-6 w-px bg-current opacity-20 mx-1"></div>
+                    <select 
+                       className="text-xs max-w-[120px] bg-transparent outline-none truncate font-medium" 
+                       value={selectedVoice?.name || ''} 
+                       onChange={(e) => {
+                          const v = voices.find(v => v.name === e.target.value);
+                          setSelectedVoice(v);
+                          if(isSpeaking) { handleStopSpeak(); } // Reset để áp dụng giọng mới
+                       }}
+                    >
+                       {voices.map(v => (
+                          <option key={v.name} value={v.name} className="text-black">{v.name.replace('Microsoft', '(MS)')}</option>
+                       ))}
+                    </select>
+                    <select 
+                       className="text-xs bg-transparent outline-none font-medium" 
+                       value={speechRate}
+                       onChange={(e) => {
+                           setSpeechRate(parseFloat(e.target.value));
+                           if(isSpeaking) { handleStopSpeak(); }
+                       }}
+                    >
+                       <option value="0.75" className="text-black">0.75x</option>
+                       <option value="1" className="text-black">1x</option>
+                       <option value="1.25" className="text-black">1.25x</option>
+                       <option value="1.5" className="text-black">1.5x</option>
+                       <option value="2" className="text-black">2x</option>
+                    </select>
+                </div>
              </div>
+
              <article>
                 <h2 className="text-3xl font-bold mb-8 text-center font-serif leading-tight text-blue-500">{chapters[currentChapterIndex].title}</h2>
                 <div className="prose prose-lg dark:prose-invert max-w-none font-serif leading-loose whitespace-pre-wrap text-justify">{chapters[currentChapterIndex].content}</div>
