@@ -51,15 +51,24 @@ const loadEpubLibrary = async () => {
     try {
         await loadScript("https://unpkg.com/epubjs/dist/epub.min.js");
     } catch (e) {
-        console.warn("Unpkg lỗi, thử nguồn dự phòng...", e);
         await loadScript("https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js");
     }
     if (window.ePub) return window.ePub;
-    throw new Error("Không tìm thấy đối tượng window.ePub sau khi tải.");
+    throw new Error("Không tìm thấy đối tượng window.ePub.");
   } catch (error) {
     console.error(error);
     throw error;
   }
+};
+
+// --- HÀM CHUYỂN ĐỔI ẢNH SANG BASE64 ---
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
 };
 
 export default function App() {
@@ -271,7 +280,7 @@ export default function App() {
     }
   };
 
-  // --- ACTIONS: IMPORT EPUB (TEXT ONLY) ---
+  // --- IMPORT EPUB (V3 - ROBUST TEXT EXTRACTION) ---
   const handleEpubImport = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -287,12 +296,11 @@ export default function App() {
           const book = ePub(event.target.result);
           await book.ready;
           
-          // 1. Lấy Metadata
+          // 1. Metadata
           const metadata = await book.loaded.metadata;
           const title = metadata.title || file.name.replace('.epub', '');
           const author = metadata.creator || 'Sưu tầm';
-          
-          // Mặc định dùng ảnh placeholder (bỏ qua việc extract ảnh bìa nặng nề)
+          // Dùng ảnh placeholder an toàn
           let coverUrl = 'https://placehold.co/400x600?text=' + encodeURIComponent(title);
 
           setImportProgress(`Đang tạo truyện: ${title}...`);
@@ -301,52 +309,68 @@ export default function App() {
           });
 
           let count = 0;
+          // Lấy danh sách spine items (đảm bảo không null)
           const spineItems = (book.spine && book.spine.items) ? book.spine.items : [];
           
+          // 2. Duyệt từng chương
           for (let i = 0; i < spineItems.length; i++) {
             const item = spineItems[i];
             if (!item || !item.href) continue;
             
+            // Lọc bớt các trang rác (nhưng lọc ít hơn phiên bản trước)
             const hrefLower = item.href.toLowerCase();
-            if (hrefLower.includes('cover') || hrefLower.includes('titlepage') || hrefLower.includes('toc') || hrefLower.includes('copyright')) continue;
+            if (hrefLower.includes('cover') || hrefLower.includes('titlepage')) continue;
 
             try {
               let content = "";
               let chapterTitle = `Chương ${count + 1}`;
               
-              // Phương pháp lấy raw text từ archive
+              // Phương pháp 1: Lấy raw text từ Archive (An toàn nhất)
               if (book.archive) {
                   try {
                       let rawText = await book.archive.getText(item.href);
+                      // Thử giải mã URL nếu không tìm thấy
                       if (!rawText) rawText = await book.archive.getText(decodeURIComponent(item.href));
+                      
                       if (rawText) {
                           const parser = new DOMParser();
                           const doc = parser.parseFromString(rawText, "text/html");
                           if (doc && doc.body) {
-                             // Xóa sạch mọi thứ không phải text
-                             const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc');
+                             // Xóa rác (script, style, nav, ảnh)
+                             const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc, a');
                              unwanted.forEach(el => el.remove());
                              
-                             content = doc.body.innerText; 
+                             content = doc.body.innerText || ""; 
                              
-                             // Tìm tiêu đề
-                             const hTag = doc.querySelector('h1, h2, h3, .title');
-                             if (hTag) chapterTitle = hTag.innerText.trim();
+                             // Tìm tiêu đề trong thẻ H1, H2...
+                             const hTag = doc.querySelector('h1, h2, h3, .title, b');
+                             if (hTag) {
+                                const text = hTag.innerText.trim();
+                                if (text.length > 2 && text.length < 100) chapterTitle = text;
+                             }
                           }
                       }
                   } catch (e) {
-                      console.warn("Lỗi đọc archive chương:", e);
+                      console.warn("Archive skip:", e);
                   }
               }
               
-              // Kiểm tra dung lượng text để tránh lỗi Firestore (Giới hạn < 900KB text)
-              if (content && content.trim().length > 50) {
-                 if (content.length > 900000) {
-                     content = content.substring(0, 900000) + "\n\n[Nội dung quá dài, đã bị cắt bớt để tránh lỗi hệ thống]";
+              // Format lại văn bản
+              if (content) {
+                 content = content
+                    .replace(/\r\n/g, '\n')
+                    .replace(/\n\s*\n/g, '\n\n') // Xóa dòng trống thừa
+                    .trim();
+              }
+
+              // Giảm điều kiện lọc: Chỉ cần > 20 ký tự là đăng (tránh mất chương ngắn)
+              if (content && content.length > 20) {
+                 // Cắt bớt nếu quá dài (tránh lỗi Firestore 1MB limit)
+                 if (content.length > 800000) {
+                     content = content.substring(0, 800000) + "\n\n...(Nội dung quá dài)...";
                  }
 
-                 content = content.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-                 setImportProgress(`Đang đăng: ${chapterTitle}...`);
+                 setImportProgress(`Đang đăng (${count + 1}): ${chapterTitle}...`);
                  
                  await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), {
                     title: chapterTitle, content: content, createdAt: Date.now() + i 
@@ -354,12 +378,12 @@ export default function App() {
                  count++;
               }
             } catch (err) {
-                console.warn("Lỗi xử lý chương:", err);
+                console.warn("Lỗi chương:", err);
             }
           }
           
           await updateDoc(novelRef, { chapterCount: count });
-          alert(`Thành công! Đã thêm truyện "${title}" với ${count} chương.`);
+          alert(`Hoàn tất! Đã thêm truyện "${title}" với ${count} chương.`);
           
         } catch (innerErr) {
           alert("Lỗi xử lý file: " + innerErr.message);
@@ -426,7 +450,7 @@ export default function App() {
       {isImporting && (
         <div className="fixed inset-0 z-[100] bg-black/80 flex flex-col items-center justify-center p-4">
            <Loader size={48} className="text-blue-500 animate-spin mb-4" />
-           <h3 className="text-xl font-bold text-white mb-2">Đang nhập dữ liệu...</h3>
+           <h3 className="text-xl font-bold text-white mb-2">Đang xử lý dữ liệu...</h3>
            <p className="text-gray-400 text-center animate-pulse">{importProgress}</p>
         </div>
       )}
