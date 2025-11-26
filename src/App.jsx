@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, Headphones, PauseCircle, PlayCircle, StopCircle, ArrowDownCircle, Maximize, Type } from 'lucide-react';
+import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, ArrowDownCircle, Maximize, Type, PauseCircle } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
@@ -53,14 +53,6 @@ export default function App() {
   const [isAutoScrolling, setIsAutoScrolling] = useState(false); 
   const scrollIntervalRef = useRef(null);
 
-  // Audio State
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [audioRate, setAudioRate] = useState(1.0);
-  const [audioVoices, setAudioVoices] = useState([]);
-  const [selectedVoice, setSelectedVoice] = useState(null);
-  const [showAudioPlayer, setShowAudioPlayer] = useState(false);
-  const synth = window.speechSynthesis;
-
   // Admin State
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -107,74 +99,6 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
-
-  // --- AUDIO LOGIC ---
-  useEffect(() => {
-    const loadVoices = () => {
-        const voices = synth.getVoices();
-        const vnVoices = voices.filter(v => v.lang.includes('vi'));
-        setAudioVoices(vnVoices.length > 0 ? vnVoices : voices);
-        const bestVoice = vnVoices.find(v => v.name.includes('Natural') || v.name.includes('Microsoft')) || vnVoices[0] || voices[0];
-        setSelectedVoice(bestVoice);
-    };
-    loadVoices();
-    if (synth.onvoiceschanged !== undefined) {
-        synth.onvoiceschanged = loadVoices;
-    }
-  }, []);
-
-  const stopAudio = () => {
-    if (synth.speaking) synth.cancel();
-    setIsSpeaking(false);
-  };
-
-  const playAudio = () => {
-    if (synth.speaking && synth.paused) {
-        synth.resume();
-        setIsSpeaking(true);
-        return;
-    }
-    if (!chapters[currentChapterIndex]) return;
-    stopAudio();
-    const text = chapters[currentChapterIndex].content;
-    const titleUtterance = new SpeechSynthesisUtterance(chapters[currentChapterIndex].title);
-    configureUtterance(titleUtterance);
-    const paragraphs = text.split('\n').filter(p => p.trim().length > 0);
-    synth.speak(titleUtterance);
-    paragraphs.forEach((paragraph, index) => {
-        const u = new SpeechSynthesisUtterance(paragraph);
-        configureUtterance(u);
-        if (index === paragraphs.length - 1) {
-            u.onend = () => setIsSpeaking(false);
-        }
-        synth.speak(u);
-    });
-    setIsSpeaking(true);
-  };
-
-  const configureUtterance = (u) => {
-      if (selectedVoice) u.voice = selectedVoice;
-      u.rate = audioRate;
-  };
-
-  const toggleAudio = () => {
-      if (isSpeaking) {
-          if (synth.paused) {
-              synth.resume();
-              setIsSpeaking(true);
-          } else {
-              synth.pause();
-              setIsSpeaking(false);
-          }
-      } else {
-          playAudio();
-      }
-  };
-
-  useEffect(() => {
-      stopAudio();
-      setIsSpeaking(false);
-  }, [currentChapterIndex, view]);
 
   // --- AUTO SCROLL ---
   useEffect(() => {
@@ -272,8 +196,8 @@ export default function App() {
 
   const toggleTheme = () => { setIsDarkMode(!isDarkMode); localStorage.setItem('novel_theme', !isDarkMode ? 'dark' : 'light'); };
   const readChapter = (index) => { setCurrentChapterIndex(index); setView('reader'); window.scrollTo(0,0); setShowChapterList(false); if (selectedNovel) saveProgress(selectedNovel.id, index); };
-  const goHome = () => { setSelectedNovel(null); setChapters([]); setView('home'); stopAudio(); };
-  const goHistory = () => { setView('history'); stopAudio(); };
+  const goHome = () => { setSelectedNovel(null); setChapters([]); setView('home'); };
+  const goHistory = () => { setView('history'); };
 
   const themeClasses = isDarkMode ? "bg-[#0a0a0a] text-gray-200" : "bg-[#ffffff] text-gray-900";
   const cardClasses = isDarkMode ? "bg-[#171717] border-[#262626] shadow-xl" : "bg-white border-gray-200 shadow-sm";
@@ -310,46 +234,6 @@ export default function App() {
           </div>
         </div>
       )}
-      
-      {showAudioPlayer && (
-        <div className={`fixed bottom-0 left-0 w-full z-50 border-t backdrop-blur-md p-4 ${isDarkMode ? 'bg-[#171717]/95 border-[#262626]' : 'bg-white/95 border-gray-200'} shadow-2xl animate-slide-up`}>
-            <div className="max-w-3xl mx-auto flex flex-col gap-3">
-                <div className="flex justify-between items-center">
-                    <div className="text-sm font-bold truncate max-w-[70%] flex items-center gap-2">
-                        <Headphones size={16} className="text-blue-500" />
-                        {chapters[currentChapterIndex]?.title}
-                    </div>
-                    <button onClick={() => { stopAudio(); setShowAudioPlayer(false); }}><X size={20} /></button>
-                </div>
-                <div className="flex items-center justify-between gap-4">
-                    <select 
-                       className={`text-xs p-2 rounded border outline-none max-w-[120px] truncate ${inputClasses}`}
-                       value={selectedVoice?.name}
-                       onChange={(e) => setSelectedVoice(audioVoices.find(v => v.name === e.target.value))}
-                    >
-                        {audioVoices.map(v => <option key={v.name} value={v.name}>{v.name}</option>)}
-                    </select>
-                    <div className="flex items-center gap-4">
-                        <button onClick={stopAudio} title="Dừng"><StopCircle size={24} /></button>
-                        <button onClick={toggleAudio} className="text-blue-500 hover:scale-110 transition-transform">
-                            {isSpeaking ? <PauseCircle size={40} fill="currentColor" /> : <PlayCircle size={40} fill="currentColor" />}
-                        </button>
-                    </div>
-                    <select 
-                       className={`text-xs p-2 rounded border outline-none ${inputClasses}`}
-                       value={audioRate}
-                       onChange={(e) => setAudioRate(parseFloat(e.target.value))}
-                    >
-                        <option value="0.75">0.75x</option>
-                        <option value="1.0">1.0x</option>
-                        <option value="1.25">1.25x</option>
-                        <option value="1.5">1.5x</option>
-                        <option value="2.0">2.0x</option>
-                    </select>
-                </div>
-            </div>
-        </div>
-      )}
 
       {showReaderSettings && (
         <div className="fixed right-4 top-16 z-[90] animate-fade-in">
@@ -384,9 +268,7 @@ export default function App() {
       </header>
 
       {showLoginModal && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in"><div className={`${cardClasses} p-6 rounded-lg w-full max-w-sm border`}><div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Đăng nhập Admin</h3><button onClick={() => setShowLoginModal(false)}><X size={20} /></button></div><form onSubmit={handleLogin} className="flex flex-col gap-4"><input type="text" placeholder="Tài khoản" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className={`p-3 rounded outline-none border ${inputClasses}`} /><input type="password" placeholder="Mật khẩu" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} className={`p-3 rounded outline-none border ${inputClasses}`} /><button type="submit" className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>Đăng nhập</button></form></div></div>}
-      
       {showAddNovelModal && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in"><div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}><div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold flex items-center gap-2"><Book size={20}/> Thêm Truyện Mới</h3><button onClick={() => setShowAddNovelModal(false)}><X size={20} /></button></div><form onSubmit={handleAddNovel} className="flex flex-col gap-4"><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tên truyện</label><input type="text" value={newNovelTitle} onChange={e => setNewNovelTitle(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} placeholder="Ví dụ: Nhân Tổ Truyện" /></div><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tác giả</label><input type="text" value={newNovelAuthor} onChange={e => setNewNovelAuthor(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} placeholder="Ví dụ: Cổ Chân Nhân" /></div><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Link Ảnh Bìa</label><input type="text" value={newNovelCover} onChange={e => setNewNovelCover(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} placeholder="https://..." /></div><button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>{isSubmitting ? 'Đang tạo...' : 'Tạo Truyện'}</button></form></div></div>}
-      
       {showEditNovelModal && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in"><div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}><div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold flex items-center gap-2"><Settings size={20}/> Sửa Thông Tin Truyện</h3><button onClick={() => setShowEditNovelModal(false)}><X size={20} /></button></div><form onSubmit={handleUpdateNovel} className="flex flex-col gap-4"><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tên truyện</label><input type="text" value={newNovelTitle} onChange={e => setNewNovelTitle(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tác giả</label><input type="text" value={newNovelAuthor} onChange={e => setNewNovelAuthor(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Link Ảnh Bìa</label><input type="text" value={newNovelCover} onChange={e => setNewNovelCover(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div><button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>{isSubmitting ? 'Đang lưu...' : 'Lưu Thay Đổi'}</button></form></div></div>}
 
       <main className="max-w-7xl mx-auto p-4 lg:py-8 min-h-[calc(100vh-64px)]">
@@ -501,7 +383,6 @@ export default function App() {
              <div className="sticky top-0 z-30 flex justify-between items-center mb-8 border-b border-inherit bg-inherit py-3 opacity-95">
                 <button onClick={() => setView('detail')} className="flex items-center gap-1 hover:text-blue-500 opacity-70 hover:opacity-100 transition-all"><ChevronLeft size={20} /> Mục lục</button>
                 <div className="flex items-center gap-2">
-                   <button onClick={() => { setShowAudioPlayer(true); playAudio(); }} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors text-blue-500" title="Nghe truyện"><Headphones size={20} /> <span className="hidden sm:inline font-medium">Nghe</span></button>
                    <button onClick={() => setIsAutoScrolling(!isAutoScrolling)} className={`p-2 rounded transition-colors ${isAutoScrolling ? 'bg-blue-600 text-white animate-pulse' : 'hover:bg-black/5 dark:hover:bg-white/10'}`} title="Tự động cuộn">{isAutoScrolling ? <PauseCircle size={20} /> : <ArrowDownCircle size={20} />}</button>
                    <button onClick={toggleFullScreen} className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors hidden md:block" title="Toàn màn hình"><Maximize size={20} /></button>
                    <button onClick={() => setShowReaderSettings(!showReaderSettings)} className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors" title="Cài đặt hiển thị"><Settings size={20} /></button>
