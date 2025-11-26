@@ -280,7 +280,7 @@ export default function App() {
     }
   };
 
-  // --- IMPORT EPUB (V3 - ROBUST TEXT EXTRACTION) ---
+  // --- IMPORT EPUB (V4 - SUPER ROBUST) ---
   const handleEpubImport = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -296,11 +296,9 @@ export default function App() {
           const book = ePub(event.target.result);
           await book.ready;
           
-          // 1. Metadata
           const metadata = await book.loaded.metadata;
           const title = metadata.title || file.name.replace('.epub', '');
           const author = metadata.creator || 'Sưu tầm';
-          // Dùng ảnh placeholder an toàn
           let coverUrl = 'https://placehold.co/400x600?text=' + encodeURIComponent(title);
 
           setImportProgress(`Đang tạo truyện: ${title}...`);
@@ -309,68 +307,77 @@ export default function App() {
           });
 
           let count = 0;
-          // Lấy danh sách spine items (đảm bảo không null)
+          // Lấy toàn bộ Spine (Xương sống) của sách
           const spineItems = (book.spine && book.spine.items) ? book.spine.items : [];
           
-          // 2. Duyệt từng chương
           for (let i = 0; i < spineItems.length; i++) {
             const item = spineItems[i];
             if (!item || !item.href) continue;
             
-            // Lọc bớt các trang rác (nhưng lọc ít hơn phiên bản trước)
-            const hrefLower = item.href.toLowerCase();
-            if (hrefLower.includes('cover') || hrefLower.includes('titlepage')) continue;
+            // Lọc bớt các file hệ thống, giữ lại file nội dung (html, xhtml)
+            // Tắt bớt bộ lọc tên file để tránh bỏ sót chương
+            if (item.href.includes('.css') || item.href.includes('.ncx')) continue;
 
             try {
               let content = "";
               let chapterTitle = `Chương ${count + 1}`;
               
-              // Phương pháp 1: Lấy raw text từ Archive (An toàn nhất)
-              if (book.archive) {
+              // THỬ CÁCH 1: Dùng Section Load (Chuẩn nhất)
+              try {
+                 const section = book.spine.get(item.href);
+                 if (section) {
+                     // Load không bind book để tránh lỗi resolve URL ảnh
+                     // Chúng ta chỉ cần DOM Text
+                     const doc = await section.load(); 
+                     if (doc && doc.body) {
+                         // Xóa rác
+                         const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc, a');
+                         unwanted.forEach(el => el.remove());
+                         content = doc.body.innerText;
+                         
+                         const hTag = doc.querySelector('h1, h2, h3, .title, b, strong');
+                         if (hTag) chapterTitle = hTag.innerText.trim().substring(0, 100);
+                     }
+                 }
+              } catch (e1) { console.warn("Cách 1 lỗi:", e1); }
+
+              // THỬ CÁCH 2: Dùng Archive GetText (Dự phòng)
+              if ((!content || content.length < 50) && book.archive) {
                   try {
                       let rawText = await book.archive.getText(item.href);
-                      // Thử giải mã URL nếu không tìm thấy
                       if (!rawText) rawText = await book.archive.getText(decodeURIComponent(item.href));
                       
                       if (rawText) {
                           const parser = new DOMParser();
                           const doc = parser.parseFromString(rawText, "text/html");
                           if (doc && doc.body) {
-                             // Xóa rác (script, style, nav, ảnh)
-                             const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc, a');
+                             const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc');
                              unwanted.forEach(el => el.remove());
+                             content = doc.body.innerText; 
                              
-                             content = doc.body.innerText || ""; 
-                             
-                             // Tìm tiêu đề trong thẻ H1, H2...
-                             const hTag = doc.querySelector('h1, h2, h3, .title, b');
-                             if (hTag) {
-                                const text = hTag.innerText.trim();
-                                if (text.length > 2 && text.length < 100) chapterTitle = text;
-                             }
+                             const hTag = doc.querySelector('h1, h2, h3, .title');
+                             if (hTag) chapterTitle = hTag.innerText.trim().substring(0, 100);
                           }
                       }
-                  } catch (e) {
-                      console.warn("Archive skip:", e);
-                  }
+                  } catch (e2) { console.warn("Cách 2 lỗi:", e2); }
               }
               
               // Format lại văn bản
               if (content) {
                  content = content
                     .replace(/\r\n/g, '\n')
-                    .replace(/\n\s*\n/g, '\n\n') // Xóa dòng trống thừa
+                    .replace(/\n\s*\n/g, '\n\n') 
                     .trim();
               }
 
-              // Giảm điều kiện lọc: Chỉ cần > 20 ký tự là đăng (tránh mất chương ngắn)
-              if (content && content.length > 20) {
-                 // Cắt bớt nếu quá dài (tránh lỗi Firestore 1MB limit)
+              // ĐIỀU KIỆN CHẤP NHẬN CHƯƠNG: > 100 ký tự
+              if (content && content.length > 100) {
+                 // Cắt bớt nếu quá dài
                  if (content.length > 800000) {
                      content = content.substring(0, 800000) + "\n\n...(Nội dung quá dài)...";
                  }
 
-                 setImportProgress(`Đang đăng (${count + 1}): ${chapterTitle}...`);
+                 setImportProgress(`Đang đăng (${count + 1}): ${chapterTitle.substring(0, 30)}...`);
                  
                  await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), {
                     title: chapterTitle, content: content, createdAt: Date.now() + i 
