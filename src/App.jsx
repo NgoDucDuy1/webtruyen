@@ -96,16 +96,24 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // --- INIT AUDIO VOICES (MỚI THÊM) ---
+  // --- INIT AUDIO VOICES (CẬP NHẬT: CHỈ LẤY GIỌNG MICROSOFT VIỆT NAM) ---
   useEffect(() => {
     const loadVoices = () => {
       const availVoices = speechSynthRef.current.getVoices();
-      setVoices(availVoices);
-      // Ưu tiên giọng Microsoft Tiếng Việt, sau đó đến giọng Tiếng Việt bất kỳ, cuối cùng là giọng đầu tiên
-      const vnVoice = availVoices.find(v => v.lang.includes('vi') && v.name.includes('Microsoft')) 
-                   || availVoices.find(v => v.name.includes('Microsoft') && (v.lang.includes('vi') || v.lang.includes('en')))
-                   || availVoices.find(v => v.lang.includes('vi'));
-      setSelectedVoice(vnVoice || availVoices[0]);
+      
+      // Lọc danh sách: Chỉ lấy giọng có chữ "Microsoft" VÀ là tiếng Việt ("vi")
+      const msVnVoices = availVoices.filter(v => 
+        v.name.includes('Microsoft') && (v.lang.includes('vi') || v.lang === 'vi-VN')
+      );
+
+      setVoices(msVnVoices);
+      
+      // Chọn mặc định giọng đầu tiên trong danh sách lọc được (nếu có)
+      if (msVnVoices.length > 0) {
+        setSelectedVoice(msVnVoices[0]);
+      } else {
+        setSelectedVoice(null); // Không tìm thấy giọng Microsoft VN nào
+      }
     };
 
     loadVoices();
@@ -595,9 +603,13 @@ export default function App() {
                           if(isSpeaking) { handleStopSpeak(); } // Reset để áp dụng giọng mới
                        }}
                     >
-                       {voices.map(v => (
-                          <option key={v.name} value={v.name} className="text-black">{v.name.replace('Microsoft', '(MS)')}</option>
-                       ))}
+                       {voices.length > 0 ? (
+                         voices.map(v => (
+                           <option key={v.name} value={v.name} className="text-black">{v.name.replace('Microsoft', '(MS)')}</option>
+                         ))
+                       ) : (
+                         <option className="text-black">Không có giọng MS VN</option>
+                       )}
                     </select>
                     <select 
                        className="text-xs bg-transparent outline-none font-medium" 
