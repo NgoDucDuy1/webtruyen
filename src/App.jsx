@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Upload, Loader, Edit } from 'lucide-react';
+import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, FilePenLine } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
@@ -28,56 +28,16 @@ if (firebaseConfig && firebaseConfig.apiKey) {
   }
 }
 
-// --- HÀM TẢI THƯ VIỆN TỪ CDN ---
-const loadScript = (src) => {
-  return new Promise((resolve, reject) => {
-    if (document.querySelector(`script[src="${src}"]`)) {
-      resolve(); 
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = src;
-    script.async = true;
-    script.onload = resolve;
-    script.onerror = () => reject(new Error(`Không thể tải: ${src}`));
-    document.head.appendChild(script);
-  });
-};
-
-const loadEpubLibrary = async () => {
-  if (window.ePub) return window.ePub;
-  try {
-    if (!window.JSZip) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js");
-    try {
-        await loadScript("https://unpkg.com/epubjs/dist/epub.min.js");
-    } catch (e) {
-        await loadScript("https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js");
-    }
-    if (window.ePub) return window.ePub;
-    throw new Error("Không tìm thấy đối tượng window.ePub.");
-  } catch (error) {
-    console.error(error);
-    throw error;
-  }
-};
-
-// --- HÀM CHUYỂN ĐỔI ẢNH SANG BASE64 ---
-const blobToBase64 = (blob) => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
-};
-
 export default function App() {
   // --- STATE ---
   const [user, setUser] = useState(null);
+  
+  // Data State
   const [novels, setNovels] = useState([]);
   const [selectedNovel, setSelectedNovel] = useState(null);
   const [chapters, setChapters] = useState([]);
   
+  // View State
   const [view, setView] = useState('home');
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
@@ -85,6 +45,7 @@ export default function App() {
   const [showChapterList, setShowChapterList] = useState(false);
   const [readingProgress, setReadingProgress] = useState({}); 
 
+  // Admin State
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
   const [showAddNovelModal, setShowAddNovelModal] = useState(false);
@@ -94,9 +55,7 @@ export default function App() {
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   
-  const [isImporting, setIsImporting] = useState(false);
-  const [importProgress, setImportProgress] = useState('');
-
+  // Delete Modal State
   const [deleteModal, setDeleteModal] = useState({ show: false, type: null, id: null, title: '' });
 
   // Forms
@@ -108,7 +67,7 @@ export default function App() {
   const [newChapterContent, setNewChapterContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // --- INIT ---
+  // --- INIT & AUTH ---
   useEffect(() => {
     if (!auth) return;
     const initAuth = async () => {
@@ -280,133 +239,6 @@ export default function App() {
     }
   };
 
-  // --- IMPORT EPUB (V4 - SUPER ROBUST) ---
-  const handleEpubImport = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    setIsImporting(true);
-    setImportProgress('Đang tải thư viện...');
-
-    try {
-      const ePub = await loadEpubLibrary();
-      setImportProgress('Đang đọc file EPUB...');
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        try {
-          const book = ePub(event.target.result);
-          await book.ready;
-          
-          const metadata = await book.loaded.metadata;
-          const title = metadata.title || file.name.replace('.epub', '');
-          const author = metadata.creator || 'Sưu tầm';
-          let coverUrl = 'https://placehold.co/400x600?text=' + encodeURIComponent(title);
-
-          setImportProgress(`Đang tạo truyện: ${title}...`);
-          const novelRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels'), {
-            title: title, author: author, cover: coverUrl, createdAt: Date.now(), chapterCount: 0
-          });
-
-          let count = 0;
-          // Lấy toàn bộ Spine (Xương sống) của sách
-          const spineItems = (book.spine && book.spine.items) ? book.spine.items : [];
-          
-          for (let i = 0; i < spineItems.length; i++) {
-            const item = spineItems[i];
-            if (!item || !item.href) continue;
-            
-            // Lọc bớt các file hệ thống, giữ lại file nội dung (html, xhtml)
-            // Tắt bớt bộ lọc tên file để tránh bỏ sót chương
-            if (item.href.includes('.css') || item.href.includes('.ncx')) continue;
-
-            try {
-              let content = "";
-              let chapterTitle = `Chương ${count + 1}`;
-              
-              // THỬ CÁCH 1: Dùng Section Load (Chuẩn nhất)
-              try {
-                 const section = book.spine.get(item.href);
-                 if (section) {
-                     // Load không bind book để tránh lỗi resolve URL ảnh
-                     // Chúng ta chỉ cần DOM Text
-                     const doc = await section.load(); 
-                     if (doc && doc.body) {
-                         // Xóa rác
-                         const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc, a');
-                         unwanted.forEach(el => el.remove());
-                         content = doc.body.innerText;
-                         
-                         const hTag = doc.querySelector('h1, h2, h3, .title, b, strong');
-                         if (hTag) chapterTitle = hTag.innerText.trim().substring(0, 100);
-                     }
-                 }
-              } catch (e1) { console.warn("Cách 1 lỗi:", e1); }
-
-              // THỬ CÁCH 2: Dùng Archive GetText (Dự phòng)
-              if ((!content || content.length < 50) && book.archive) {
-                  try {
-                      let rawText = await book.archive.getText(item.href);
-                      if (!rawText) rawText = await book.archive.getText(decodeURIComponent(item.href));
-                      
-                      if (rawText) {
-                          const parser = new DOMParser();
-                          const doc = parser.parseFromString(rawText, "text/html");
-                          if (doc && doc.body) {
-                             const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc');
-                             unwanted.forEach(el => el.remove());
-                             content = doc.body.innerText; 
-                             
-                             const hTag = doc.querySelector('h1, h2, h3, .title');
-                             if (hTag) chapterTitle = hTag.innerText.trim().substring(0, 100);
-                          }
-                      }
-                  } catch (e2) { console.warn("Cách 2 lỗi:", e2); }
-              }
-              
-              // Format lại văn bản
-              if (content) {
-                 content = content
-                    .replace(/\r\n/g, '\n')
-                    .replace(/\n\s*\n/g, '\n\n') 
-                    .trim();
-              }
-
-              // ĐIỀU KIỆN CHẤP NHẬN CHƯƠNG: > 100 ký tự
-              if (content && content.length > 100) {
-                 // Cắt bớt nếu quá dài
-                 if (content.length > 800000) {
-                     content = content.substring(0, 800000) + "\n\n...(Nội dung quá dài)...";
-                 }
-
-                 setImportProgress(`Đang đăng (${count + 1}): ${chapterTitle.substring(0, 30)}...`);
-                 
-                 await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), {
-                    title: chapterTitle, content: content, createdAt: Date.now() + i 
-                 });
-                 count++;
-              }
-            } catch (err) {
-                console.warn("Lỗi chương:", err);
-            }
-          }
-          
-          await updateDoc(novelRef, { chapterCount: count });
-          alert(`Hoàn tất! Đã thêm truyện "${title}" với ${count} chương.`);
-          
-        } catch (innerErr) {
-          alert("Lỗi xử lý file: " + innerErr.message);
-        } finally {
-          setIsImporting(false); setImportProgress('');
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    } catch (error) {
-      alert("Lỗi import: " + error.message);
-      setIsImporting(false);
-    } finally {
-      e.target.value = null;
-    }
-  };
-
   // --- ACTIONS: DELETE ---
   const requestDelete = (e, type, id, title) => {
     e.stopPropagation(); e.preventDefault();
@@ -454,14 +286,6 @@ export default function App() {
   return (
     <div className={`min-h-screen font-sans transition-colors duration-300 ${themeClasses} selection:bg-blue-500 selection:text-white`}>
       
-      {isImporting && (
-        <div className="fixed inset-0 z-[100] bg-black/80 flex flex-col items-center justify-center p-4">
-           <Loader size={48} className="text-blue-500 animate-spin mb-4" />
-           <h3 className="text-xl font-bold text-white mb-2">Đang xử lý dữ liệu...</h3>
-           <p className="text-gray-400 text-center animate-pulse">{importProgress}</p>
-        </div>
-      )}
-
       {deleteModal.show && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className={`${cardClasses} p-6 rounded-lg w-full max-w-sm border`}>
@@ -581,10 +405,6 @@ export default function App() {
             </div>
             {isAdmin && (
               <div className="flex justify-end gap-3 mb-6">
-                <label className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-transform active:scale-95 cursor-pointer bg-green-600 hover:bg-green-700 text-white shadow-lg`}>
-                   <Upload size={20} /> Import EPUB
-                   <input type="file" accept=".epub" className="hidden" onChange={handleEpubImport} />
-                </label>
                 <button onClick={() => {setNewNovelTitle(''); setNewNovelAuthor(''); setNewNovelCover(''); setShowAddNovelModal(true)}} className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-transform active:scale-95 ${buttonPrimary}`}><Plus size={20} /> Thêm Truyện Mới</button>
               </div>
             )}
