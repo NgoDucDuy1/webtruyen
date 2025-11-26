@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, ArrowDownCircle, Maximize, Type, PauseCircle } from 'lucide-react';
+import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, ArrowDownCircle, Maximize, Type, PauseCircle, Headphones, StopCircle, PlayCircle } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
@@ -56,6 +56,14 @@ export default function App() {
   const [isAutoScrolling, setIsAutoScrolling] = useState(false); 
   const scrollIntervalRef = useRef(null);
 
+  // Audio State (GIỮ NGUYÊN)
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [audioRate, setAudioRate] = useState(1.0);
+  const [audioVoices, setAudioVoices] = useState([]);
+  const [selectedVoice, setSelectedVoice] = useState(null);
+  const [showAudioPlayer, setShowAudioPlayer] = useState(false);
+  const synth = window.speechSynthesis;
+
   // Admin State
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -102,6 +110,74 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // --- AUDIO LOGIC ---
+  useEffect(() => {
+    const loadVoices = () => {
+        const voices = synth.getVoices();
+        const vnVoices = voices.filter(v => v.lang.includes('vi'));
+        setAudioVoices(vnVoices.length > 0 ? vnVoices : voices);
+        const bestVoice = vnVoices.find(v => v.name.includes('Natural') || v.name.includes('Microsoft')) || vnVoices[0] || voices[0];
+        setSelectedVoice(bestVoice);
+    };
+    loadVoices();
+    if (synth.onvoiceschanged !== undefined) {
+        synth.onvoiceschanged = loadVoices;
+    }
+  }, []);
+
+  const stopAudio = () => {
+    if (synth.speaking) synth.cancel();
+    setIsSpeaking(false);
+  };
+
+  const playAudio = () => {
+    if (synth.speaking && synth.paused) {
+        synth.resume();
+        setIsSpeaking(true);
+        return;
+    }
+    if (!chapters[currentChapterIndex]) return;
+    stopAudio();
+    const text = chapters[currentChapterIndex].content;
+    const titleUtterance = new SpeechSynthesisUtterance(chapters[currentChapterIndex].title);
+    configureUtterance(titleUtterance);
+    const paragraphs = text.split('\n').filter(p => p.trim().length > 0);
+    synth.speak(titleUtterance);
+    paragraphs.forEach((paragraph, index) => {
+        const u = new SpeechSynthesisUtterance(paragraph);
+        configureUtterance(u);
+        if (index === paragraphs.length - 1) {
+            u.onend = () => setIsSpeaking(false);
+        }
+        synth.speak(u);
+    });
+    setIsSpeaking(true);
+  };
+
+  const configureUtterance = (u) => {
+      if (selectedVoice) u.voice = selectedVoice;
+      u.rate = audioRate;
+  };
+
+  const toggleAudio = () => {
+      if (isSpeaking) {
+          if (synth.paused) {
+              synth.resume();
+              setIsSpeaking(true);
+          } else {
+              synth.pause();
+              setIsSpeaking(false);
+          }
+      } else {
+          playAudio();
+      }
+  };
+
+  useEffect(() => {
+      stopAudio();
+      setIsSpeaking(false);
+  }, [currentChapterIndex, view]);
 
   // --- AUTO SCROLL LOGIC ---
   useEffect(() => {
@@ -391,6 +467,7 @@ export default function App() {
              <div className="sticky top-0 z-30 flex justify-between items-center mb-8 border-b border-inherit bg-inherit py-3 opacity-95">
                 <button onClick={() => setView('detail')} className="flex items-center gap-1 hover:text-blue-500 opacity-70 hover:opacity-100 transition-all"><ChevronLeft size={20} /> Mục lục</button>
                 <div className="flex items-center gap-2">
+                   {/* Audio Player removed */}
                    <button onClick={() => setIsAutoScrolling(!isAutoScrolling)} className={`p-2 rounded transition-colors ${isAutoScrolling ? 'bg-blue-600 text-white animate-pulse' : 'hover:bg-black/5 dark:hover:bg-white/10'}`} title="Tự động cuộn">{isAutoScrolling ? <PauseCircle size={20} /> : <ArrowDownCircle size={20} />}</button>
                    <button onClick={toggleFullScreen} className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors hidden md:block" title="Toàn màn hình"><Maximize size={20} /></button>
                    <button onClick={() => setShowReaderSettings(!showReaderSettings)} className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors" title="Cài đặt hiển thị"><Settings size={20} /></button>
