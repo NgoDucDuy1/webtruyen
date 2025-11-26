@@ -1,9 +1,3 @@
-// --- HƯỚNG DẪN CÀI ĐẶT ---
-// Trong mục Dependencies, bạn CHỈ CẦN cài 2 thư viện sau:
-// 1. firebase
-// 2. lucide-react
-// (TUYỆT ĐỐI KHÔNG CÀI 'epubjs' VÀO DEPENDENCIES VÌ SẼ GÂY LỖI)
-
 import React, { useState, useEffect } from 'react';
 import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Upload, Loader, Edit } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
@@ -11,7 +5,6 @@ import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken }
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
 
 // --- CẤU HÌNH FIREBASE ---
-// Lưu ý: Thay thế bằng cấu hình thật của bạn nếu chạy trên Vercel/Local
 const manualConfig = {
   apiKey: "AIzaSyATK-OHrtkDf5yt34xeZleEG8-cNIMQ3jc",
   authDomain: "webtruyen-92e3c.firebaseapp.com",
@@ -35,7 +28,7 @@ if (firebaseConfig && firebaseConfig.apiKey) {
   }
 }
 
-// --- HÀM TẢI THƯ VIỆN TỪ CDN (KHÔNG CẦN CÀI TRONG DEPENDENCIES) ---
+// --- HÀM TẢI THƯ VIỆN TỪ CDN ---
 const loadScript = (src) => {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) {
@@ -53,36 +46,20 @@ const loadScript = (src) => {
 
 const loadEpubLibrary = async () => {
   if (window.ePub) return window.ePub;
-
   try {
-    // Tải JSZip trước (Bắt buộc cho epub.js)
-    if (!window.JSZip) {
-       await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js");
-    }
-    // Tải epub.js
+    if (!window.JSZip) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js");
     try {
         await loadScript("https://unpkg.com/epubjs/dist/epub.min.js");
     } catch (e) {
         console.warn("Unpkg lỗi, thử nguồn dự phòng...", e);
         await loadScript("https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js");
     }
-    
     if (window.ePub) return window.ePub;
     throw new Error("Không tìm thấy đối tượng window.ePub sau khi tải.");
   } catch (error) {
     console.error(error);
     throw error;
   }
-};
-
-// --- HÀM CHUYỂN ĐỔI ẢNH SANG BASE64 ---
-const blobToBase64 = (blob) => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onloadend = () => resolve(reader.result);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
 };
 
 export default function App() {
@@ -294,7 +271,7 @@ export default function App() {
     }
   };
 
-  // --- ACTIONS: IMPORT EPUB ---
+  // --- ACTIONS: IMPORT EPUB (TEXT ONLY) ---
   const handleEpubImport = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -314,33 +291,9 @@ export default function App() {
           const metadata = await book.loaded.metadata;
           const title = metadata.title || file.name.replace('.epub', '');
           const author = metadata.creator || 'Sưu tầm';
+          
+          // Mặc định dùng ảnh placeholder (bỏ qua việc extract ảnh bìa nặng nề)
           let coverUrl = 'https://placehold.co/400x600?text=' + encodeURIComponent(title);
-
-          // 2. Lấy ảnh bìa
-          setImportProgress('Đang trích xuất ảnh bìa...');
-          try {
-            let coverPath = await book.coverUrl();
-            // Fallback tìm cover nếu coverUrl() trả về null
-            if (!coverPath && book.packaging && book.packaging.metadata && book.packaging.metadata.cover) {
-               const coverMeta = book.packaging.metadata.cover;
-               if (book.archive && book.archive.urlCache && book.archive.urlCache[coverMeta]) {
-                   coverPath = book.archive.urlCache[coverMeta];
-               } else {
-                   coverPath = coverMeta;
-               }
-            }
-            // Nếu tìm được đường dẫn ảnh, thử convert sang base64
-            if (coverPath) {
-                const coverBlob = await book.archive.getBlob(coverPath);
-                if (coverBlob) {
-                    const base64Cover = await blobToBase64(coverBlob);
-                    // Giới hạn size ảnh < 800KB
-                    if (base64Cover.length < 819200) coverUrl = base64Cover;
-                }
-            }
-          } catch (err) {
-             console.warn("Lỗi lấy ảnh bìa:", err);
-          }
 
           setImportProgress(`Đang tạo truyện: ${title}...`);
           const novelRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels'), {
@@ -361,7 +314,7 @@ export default function App() {
               let content = "";
               let chapterTitle = `Chương ${count + 1}`;
               
-              // Phương pháp lấy raw text từ archive (an toàn nhất, không load ảnh)
+              // Phương pháp lấy raw text từ archive
               if (book.archive) {
                   try {
                       let rawText = await book.archive.getText(item.href);
@@ -370,7 +323,7 @@ export default function App() {
                           const parser = new DOMParser();
                           const doc = parser.parseFromString(rawText, "text/html");
                           if (doc && doc.body) {
-                             // Xóa các thẻ không cần thiết
+                             // Xóa sạch mọi thứ không phải text
                              const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc');
                              unwanted.forEach(el => el.remove());
                              
@@ -386,9 +339,15 @@ export default function App() {
                   }
               }
               
+              // Kiểm tra dung lượng text để tránh lỗi Firestore (Giới hạn < 900KB text)
               if (content && content.trim().length > 50) {
+                 if (content.length > 900000) {
+                     content = content.substring(0, 900000) + "\n\n[Nội dung quá dài, đã bị cắt bớt để tránh lỗi hệ thống]";
+                 }
+
                  content = content.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
                  setImportProgress(`Đang đăng: ${chapterTitle}...`);
+                 
                  await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), {
                     title: chapterTitle, content: content, createdAt: Date.now() + i 
                  });
@@ -403,7 +362,6 @@ export default function App() {
           alert(`Thành công! Đã thêm truyện "${title}" với ${count} chương.`);
           
         } catch (innerErr) {
-          console.error(innerErr);
           alert("Lỗi xử lý file: " + innerErr.message);
         } finally {
           setIsImporting(false); setImportProgress('');
