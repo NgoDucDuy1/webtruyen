@@ -1,3 +1,9 @@
+// --- HƯỚNG DẪN CÀI ĐẶT ---
+// Trong mục Dependencies, bạn CHỈ CẦN cài 2 thư viện sau:
+// 1. firebase
+// 2. lucide-react
+// (TUYỆT ĐỐI KHÔNG CÀI 'epubjs' VÀO DEPENDENCIES VÌ SẼ GÂY LỖI)
+
 import React, { useState, useEffect } from 'react';
 import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Upload, Loader, Edit } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
@@ -5,6 +11,7 @@ import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken }
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
 
 // --- CẤU HÌNH FIREBASE ---
+// Lưu ý: Thay thế bằng cấu hình thật của bạn nếu chạy trên Vercel/Local
 const manualConfig = {
   apiKey: "AIzaSyATK-OHrtkDf5yt34xeZleEG8-cNIMQ3jc",
   authDomain: "webtruyen-92e3c.firebaseapp.com",
@@ -28,7 +35,7 @@ if (firebaseConfig && firebaseConfig.apiKey) {
   }
 }
 
-// --- HÀM TẢI THƯ VIỆN TỪ CDN ---
+// --- HÀM TẢI THƯ VIỆN TỪ CDN (KHÔNG CẦN CÀI TRONG DEPENDENCIES) ---
 const loadScript = (src) => {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) {
@@ -48,9 +55,11 @@ const loadEpubLibrary = async () => {
   if (window.ePub) return window.ePub;
 
   try {
+    // Tải JSZip trước (Bắt buộc cho epub.js)
     if (!window.JSZip) {
        await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js");
     }
+    // Tải epub.js
     try {
         await loadScript("https://unpkg.com/epubjs/dist/epub.min.js");
     } catch (e) {
@@ -311,6 +320,7 @@ export default function App() {
           setImportProgress('Đang trích xuất ảnh bìa...');
           try {
             let coverPath = await book.coverUrl();
+            // Fallback tìm cover nếu coverUrl() trả về null
             if (!coverPath && book.packaging && book.packaging.metadata && book.packaging.metadata.cover) {
                const coverMeta = book.packaging.metadata.cover;
                if (book.archive && book.archive.urlCache && book.archive.urlCache[coverMeta]) {
@@ -319,10 +329,12 @@ export default function App() {
                    coverPath = coverMeta;
                }
             }
+            // Nếu tìm được đường dẫn ảnh, thử convert sang base64
             if (coverPath) {
                 const coverBlob = await book.archive.getBlob(coverPath);
                 if (coverBlob) {
                     const base64Cover = await blobToBase64(coverBlob);
+                    // Giới hạn size ảnh < 800KB
                     if (base64Cover.length < 819200) coverUrl = base64Cover;
                 }
             }
@@ -349,7 +361,7 @@ export default function App() {
               let content = "";
               let chapterTitle = `Chương ${count + 1}`;
               
-              // Phương pháp lấy raw text từ archive (an toàn nhất)
+              // Phương pháp lấy raw text từ archive (an toàn nhất, không load ảnh)
               if (book.archive) {
                   try {
                       let rawText = await book.archive.getText(item.href);
@@ -358,9 +370,13 @@ export default function App() {
                           const parser = new DOMParser();
                           const doc = parser.parseFromString(rawText, "text/html");
                           if (doc && doc.body) {
+                             // Xóa các thẻ không cần thiết
                              const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc');
                              unwanted.forEach(el => el.remove());
+                             
                              content = doc.body.innerText; 
+                             
+                             // Tìm tiêu đề
                              const hTag = doc.querySelector('h1, h2, h3, .title');
                              if (hTag) chapterTitle = hTag.innerText.trim();
                           }
@@ -449,7 +465,6 @@ export default function App() {
   return (
     <div className={`min-h-screen font-sans transition-colors duration-300 ${themeClasses} selection:bg-blue-500 selection:text-white`}>
       
-      {/* Modals */}
       {isImporting && (
         <div className="fixed inset-0 z-[100] bg-black/80 flex flex-col items-center justify-center p-4">
            <Loader size={48} className="text-blue-500 animate-spin mb-4" />
@@ -473,14 +488,11 @@ export default function App() {
         </div>
       )}
 
-      {/* Chapter Edit Modal */}
+      {/* EDIT CHAPTER MODAL */}
       {editingChapter && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}>
-            <div className="flex justify-between items-center mb-4">
-                <h3 className="text-xl font-bold">Đổi tên chương</h3>
-                <button onClick={() => setEditingChapter(null)}><X size={20} /></button>
-            </div>
+            <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Đổi tên chương</h3><button onClick={() => setEditingChapter(null)}><X size={20} /></button></div>
             <form onSubmit={handleUpdateChapter} className="flex flex-col gap-4">
               <input type="text" value={editingChapter.title} onChange={e => setEditingChapter({...editingChapter, title: e.target.value})} className={`w-full p-2 rounded outline-none border ${inputClasses}`} />
               <button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>{isSubmitting ? 'Đang lưu...' : 'Lưu Thay Đổi'}</button>
@@ -489,7 +501,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Chapter List Sidebar */}
       {showChapterList && (
         <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex justify-end animate-fade-in" onClick={() => setShowChapterList(false)}>
            <div className={`w-full max-w-xs h-full ${isDarkMode ? 'bg-[#171717] border-l border-[#262626]' : 'bg-white border-l border-gray-200'} shadow-2xl flex flex-col`} onClick={(e) => e.stopPropagation()}>
@@ -508,7 +519,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Header */}
       <header className={`sticky top-0 z-50 h-16 flex items-center justify-between px-4 lg:px-8 border-b backdrop-blur-sm ${headerClasses}`}>
         <div onClick={() => {setView('home'); setSelectedNovel(null);}} className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity">
           {view === 'home' ? <Book size={24} className="text-blue-500" /> : <Home size={24} className="text-blue-500" />}
@@ -531,7 +541,6 @@ export default function App() {
         </div>
       </header>
 
-      {/* Login Modal */}
       {showLoginModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className={`${cardClasses} p-6 rounded-lg w-full max-w-sm border`}>
@@ -545,7 +554,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Add Novel Modal */}
       {showAddNovelModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}>
@@ -560,7 +568,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Edit Novel Modal */}
+      {/* EDIT NOVEL MODAL */}
       {showEditNovelModal && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}>
@@ -575,7 +583,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto p-4 lg:py-8 min-h-[calc(100vh-64px)]">
         {view === 'home' && (
           <div className="animate-fade-in">
