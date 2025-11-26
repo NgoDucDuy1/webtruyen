@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, FilePenLine, Type, AlignJustify, AlignLeft, Clock, ArrowDownCircle, PauseCircle, Maximize, Minimize } from 'lucide-react';
+import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Upload, Loader, Edit, Headphones, PauseCircle, PlayCircle, StopCircle, ArrowDownCircle, Maximize, Type } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
@@ -28,6 +28,49 @@ if (firebaseConfig && firebaseConfig.apiKey) {
   }
 }
 
+// --- HÀM TẢI THƯ VIỆN TỪ CDN ---
+const loadScript = (src) => {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) {
+      resolve(); 
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Không thể tải: ${src}`));
+    document.head.appendChild(script);
+  });
+};
+
+const loadEpubLibrary = async () => {
+  if (window.ePub) return window.ePub;
+  try {
+    if (!window.JSZip) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js");
+    try {
+        await loadScript("https://unpkg.com/epubjs/dist/epub.min.js");
+    } catch (e) {
+        await loadScript("https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js");
+    }
+    if (window.ePub) return window.ePub;
+    throw new Error("Không tìm thấy đối tượng window.ePub.");
+  } catch (error) {
+    console.error(error);
+    throw error;
+  }
+};
+
+// --- HÀM CHUYỂN ĐỔI ẢNH SANG BASE64 ---
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
+
 export default function App() {
   // --- STATE ---
   const [user, setUser] = useState(null);
@@ -38,14 +81,14 @@ export default function App() {
   const [chapters, setChapters] = useState([]);
   
   // View State
-  const [view, setView] = useState('home'); // 'home', 'history', 'detail', 'reader'
+  const [view, setView] = useState('home');
   const [currentChapterIndex, setCurrentChapterIndex] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const [isDarkMode, setIsDarkMode] = useState(true);
   const [showChapterList, setShowChapterList] = useState(false);
   const [readingProgress, setReadingProgress] = useState({}); 
 
-  // Reader Enhancements State (MỚI)
+  // Reader Enhancements State
   const [showReaderSettings, setShowReaderSettings] = useState(false);
   const [readerSettings, setReaderSettings] = useState({
     fontSize: 18,
@@ -53,8 +96,16 @@ export default function App() {
     fontFamily: 'font-serif', 
     textAlign: 'text-justify'
   });
-  const [isAutoScrolling, setIsAutoScrolling] = useState(false); // Trạng thái tự động cuộn
+  const [isAutoScrolling, setIsAutoScrolling] = useState(false); 
   const scrollIntervalRef = useRef(null);
+
+  // Audio State
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [audioRate, setAudioRate] = useState(1.0);
+  const [audioVoices, setAudioVoices] = useState([]);
+  const [selectedVoice, setSelectedVoice] = useState(null);
+  const [showAudioPlayer, setShowAudioPlayer] = useState(false);
+  const synth = window.speechSynthesis;
 
   // Admin State
   const [isAdmin, setIsAdmin] = useState(false);
@@ -66,6 +117,8 @@ export default function App() {
   const [passwordInput, setPasswordInput] = useState('');
   const [deleteModal, setDeleteModal] = useState({ show: false, type: null, id: null, title: '' });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState('');
 
   // Forms
   const [newNovelTitle, setNewNovelTitle] = useState('');
@@ -97,21 +150,85 @@ export default function App() {
     const savedProgress = JSON.parse(localStorage.getItem('novel_progress') || '{}');
     setReadingProgress(savedProgress);
 
-    // Load reader settings
     const savedReaderSettings = JSON.parse(localStorage.getItem('novel_reader_settings'));
     if (savedReaderSettings) setReaderSettings(savedReaderSettings);
 
     return () => unsubscribe();
   }, []);
 
-  // --- AUTO SCROLL LOGIC (MỚI) ---
+  // --- AUDIO LOGIC ---
+  useEffect(() => {
+    const loadVoices = () => {
+        const voices = synth.getVoices();
+        const vnVoices = voices.filter(v => v.lang.includes('vi'));
+        setAudioVoices(vnVoices.length > 0 ? vnVoices : voices);
+        const bestVoice = vnVoices.find(v => v.name.includes('Natural') || v.name.includes('Microsoft')) || vnVoices[0] || voices[0];
+        setSelectedVoice(bestVoice);
+    };
+    loadVoices();
+    if (synth.onvoiceschanged !== undefined) {
+        synth.onvoiceschanged = loadVoices;
+    }
+  }, []);
+
+  const stopAudio = () => {
+    if (synth.speaking) synth.cancel();
+    setIsSpeaking(false);
+  };
+
+  const playAudio = () => {
+    if (synth.speaking && synth.paused) {
+        synth.resume();
+        setIsSpeaking(true);
+        return;
+    }
+    if (!chapters[currentChapterIndex]) return;
+    stopAudio();
+    const text = chapters[currentChapterIndex].content;
+    const titleUtterance = new SpeechSynthesisUtterance(chapters[currentChapterIndex].title);
+    configureUtterance(titleUtterance);
+    const paragraphs = text.split('\n').filter(p => p.trim().length > 0);
+    synth.speak(titleUtterance);
+    paragraphs.forEach((paragraph, index) => {
+        const u = new SpeechSynthesisUtterance(paragraph);
+        configureUtterance(u);
+        if (index === paragraphs.length - 1) {
+            u.onend = () => setIsSpeaking(false);
+        }
+        synth.speak(u);
+    });
+    setIsSpeaking(true);
+  };
+
+  const configureUtterance = (u) => {
+      if (selectedVoice) u.voice = selectedVoice;
+      u.rate = audioRate;
+  };
+
+  const toggleAudio = () => {
+      if (isSpeaking) {
+          if (synth.paused) {
+              synth.resume();
+              setIsSpeaking(true);
+          } else {
+              synth.pause();
+              setIsSpeaking(false); // Thực ra là paused
+          }
+      } else {
+          playAudio();
+      }
+  };
+
+  useEffect(() => {
+      stopAudio();
+      setIsSpeaking(false);
+  }, [currentChapterIndex, view]);
+
+  // --- AUTO SCROLL ---
   useEffect(() => {
     if (isAutoScrolling) {
       scrollIntervalRef.current = setInterval(() => {
-        // Cuộn xuống 1px mỗi 20ms (tốc độ trung bình)
         window.scrollBy(0, 1);
-        
-        // Tự dừng khi xuống cuối trang
         if ((window.innerHeight + window.scrollY) >= document.body.offsetHeight - 50) {
           setIsAutoScrolling(false);
         }
@@ -122,10 +239,7 @@ export default function App() {
     return () => clearInterval(scrollIntervalRef.current);
   }, [isAutoScrolling]);
 
-  // Reset auto scroll khi đổi chương hoặc thoát
-  useEffect(() => {
-    setIsAutoScrolling(false);
-  }, [currentChapterIndex, view]);
+  useEffect(() => { setIsAutoScrolling(false); }, [currentChapterIndex, view]);
 
   const toggleFullScreen = () => {
     if (!document.fullscreenElement) {
@@ -135,7 +249,6 @@ export default function App() {
     }
   };
 
-  // --- HELPERS ---
   const saveProgress = (novelId, chapterIndex) => {
     const newProgress = { ...readingProgress, [novelId]: chapterIndex };
     setReadingProgress(newProgress);
@@ -174,14 +287,9 @@ export default function App() {
     return () => unsubscribe();
   }, [selectedNovel, user]);
 
-  // --- FILTERED NOVELS ---
   const getFilteredNovels = () => {
     let list = novels;
-    // Lọc theo Tủ sách (Lịch sử)
-    if (view === 'history') {
-      list = list.filter(n => readingProgress[n.id] !== undefined);
-    }
-    // Lọc theo Tìm kiếm
+    if (view === 'history') list = list.filter(n => readingProgress[n.id] !== undefined);
     if (searchTerm) {
       const lowerTerm = searchTerm.toLowerCase();
       list = list.filter(novel => 
@@ -210,12 +318,13 @@ export default function App() {
   const openEditNovelModal = () => { if (!selectedNovel) return; setNewNovelTitle(selectedNovel.title); setNewNovelAuthor(selectedNovel.author); setNewNovelCover(selectedNovel.cover); setShowEditNovelModal(true); };
   const openEditChapterModal = (chapter) => { setEditingChapter({ id: chapter.id, title: chapter.title }); };
 
+  const handleEpubImport = async (e) => { const file = e.target.files[0]; if (!file) return; setIsImporting(true); setImportProgress('Đang tải thư viện...'); try { const ePub = await loadEpubLibrary(); setImportProgress('Đang đọc file EPUB...'); const reader = new FileReader(); reader.onload = async (event) => { try { const book = ePub(event.target.result); await book.ready; const metadata = await book.loaded.metadata; const title = metadata.title || file.name.replace('.epub', ''); const author = metadata.creator || 'Sưu tầm'; let coverUrl = 'https://placehold.co/400x600?text=' + encodeURIComponent(title); setImportProgress(`Đang tạo truyện: ${title}...`); const novelRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels'), { title: title, author: author, cover: coverUrl, createdAt: Date.now(), chapterCount: 0 }); let count = 0; const spineItems = (book.spine && book.spine.items) ? book.spine.items : []; for (let i = 0; i < spineItems.length; i++) { const item = spineItems[i]; if (!item || !item.href) continue; const hrefLower = item.href.toLowerCase(); if (hrefLower.includes('cover') || hrefLower.includes('titlepage') || hrefLower.includes('toc') || hrefLower.includes('copyright')) continue; try { let content = ""; let chapterTitle = `Chương ${count + 1}`; if (book.archive) { try { let rawText = await book.archive.getText(item.href); if (!rawText) rawText = await book.archive.getText(decodeURIComponent(item.href)); if (rawText) { const parser = new DOMParser(); const doc = parser.parseFromString(rawText, "text/html"); if (doc && doc.body) { const unwanted = doc.querySelectorAll('script, style, nav, img, svg, .toc'); unwanted.forEach(el => el.remove()); content = doc.body.innerText; const hTag = doc.querySelector('h1, h2, h3, .title'); if (hTag) chapterTitle = hTag.innerText.trim(); } } } catch (e) { console.warn("Lỗi đọc archive chương:", e); } } if (content && content.trim().length > 50) { content = content.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(); setImportProgress(`Đang đăng: ${chapterTitle}...`); await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), { title: chapterTitle, content: content, createdAt: Date.now() + i }); count++; } } catch (err) { console.warn("Lỗi xử lý chương:", err); } } await updateDoc(novelRef, { chapterCount: count }); alert(`Thành công! Đã thêm truyện "${title}" với ${count} chương.`); } catch (innerErr) { alert("Lỗi xử lý file: " + innerErr.message); } finally { setIsImporting(false); setImportProgress(''); } }; reader.readAsArrayBuffer(file); } catch (error) { alert("Lỗi import: " + error.message); setIsImporting(false); } finally { e.target.value = null; } };
+
   const toggleTheme = () => { setIsDarkMode(!isDarkMode); localStorage.setItem('novel_theme', !isDarkMode ? 'dark' : 'light'); };
   const readChapter = (index) => { setCurrentChapterIndex(index); setView('reader'); window.scrollTo(0,0); setShowChapterList(false); if (selectedNovel) saveProgress(selectedNovel.id, index); };
-  const goHome = () => { setSelectedNovel(null); setChapters([]); setView('home'); };
-  const goHistory = () => { setView('history'); };
+  const goHome = () => { setSelectedNovel(null); setChapters([]); setView('home'); stopAudio(); };
+  const goHistory = () => { setView('history'); stopAudio(); };
 
-  // --- STYLES ---
   const themeClasses = isDarkMode ? "bg-[#0a0a0a] text-gray-200" : "bg-[#ffffff] text-gray-900";
   const cardClasses = isDarkMode ? "bg-[#171717] border-[#262626] shadow-xl" : "bg-white border-gray-200 shadow-sm";
   const headerClasses = isDarkMode ? "bg-[#0a0a0a]/95 border-[#262626]" : "bg-white/95 border-gray-200";
@@ -223,28 +332,75 @@ export default function App() {
   const buttonPrimary = "bg-blue-600 hover:bg-blue-700 text-white shadow-lg shadow-blue-900/20";
 
   return (
-    <div className={`min-h-screen font-sans transition-colors duration-300 ${themeClasses} selection:bg-blue-500 selection:text-white`}>
+    <div className={`min-h-screen font-sans transition-colors duration-300 ${themeClasses} selection:bg-blue-500 selection:text-white pb-24`}>
       
-      {/* Modals */}
+      {isImporting && <div className="fixed inset-0 z-[100] bg-black/80 flex flex-col items-center justify-center p-4"><Loader size={48} className="text-blue-500 animate-spin mb-4" /><h3 className="text-xl font-bold text-white mb-2">Đang nhập dữ liệu...</h3><p className="text-gray-400 text-center animate-pulse">{importProgress}</p></div>}
+      
       {deleteModal.show && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className={`${cardClasses} p-6 rounded-lg w-full max-w-sm border`}>
             <div className="flex flex-col items-center text-center gap-4">
                <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center text-red-600"><AlertTriangle size={24} /></div>
                <div><h3 className="text-xl font-bold mb-1">Xác nhận xoá?</h3><p className="text-sm opacity-80">Hành động này không thể hoàn tác.</p></div>
-               <div className="flex gap-3 w-full mt-2"><button onClick={() => setDeleteModal({ ...deleteModal, show: false })} className="flex-1 py-2.5 rounded bg-gray-500/10 hover:bg-gray-500/20 font-medium">Huỷ bỏ</button><button onClick={confirmDelete} className="flex-1 py-2.5 rounded bg-red-600 hover:bg-red-700 text-white font-bold shadow-lg shadow-red-900/20">Xoá ngay</button></div>
+               <div className="flex gap-3 w-full mt-2">
+                  <button onClick={() => setDeleteModal({ ...deleteModal, show: false })} className="flex-1 py-2.5 rounded bg-gray-500/10 hover:bg-gray-500/20 font-medium">Huỷ bỏ</button>
+                  <button onClick={confirmDelete} className="flex-1 py-2.5 rounded bg-red-600 hover:bg-red-700 text-white font-bold shadow-lg shadow-red-900/20">Xoá ngay</button>
+               </div>
             </div>
           </div>
         </div>
       )}
-      
-      {/* Edit Chapter Modal */}
+
       {editingChapter && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}>
-             <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Đổi tên chương</h3><button onClick={() => setEditingChapter(null)}><X size={20} /></button></div>
-             <form onSubmit={handleUpdateChapter} className="flex flex-col gap-4"><input type="text" value={editingChapter.title} onChange={e => setEditingChapter({...editingChapter, title: e.target.value})} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /><button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>Lưu Thay Đổi</button></form>
+            <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Đổi tên chương</h3><button onClick={() => setEditingChapter(null)}><X size={20} /></button></div>
+            <form onSubmit={handleUpdateChapter} className="flex flex-col gap-4">
+              <input type="text" value={editingChapter.title} onChange={e => setEditingChapter({...editingChapter, title: e.target.value})} className={`w-full p-2 rounded outline-none border ${inputClasses}`} />
+              <button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>Lưu Thay Đổi</button>
+            </form>
           </div>
+        </div>
+      )}
+      
+      {/* Audio Player Overlay */}
+      {showAudioPlayer && (
+        <div className={`fixed bottom-0 left-0 w-full z-50 border-t backdrop-blur-md p-4 ${isDarkMode ? 'bg-[#171717]/95 border-[#262626]' : 'bg-white/95 border-gray-200'} shadow-2xl animate-slide-up`}>
+            <div className="max-w-3xl mx-auto flex flex-col gap-3">
+                <div className="flex justify-between items-center">
+                    <div className="text-sm font-bold truncate max-w-[70%] flex items-center gap-2">
+                        <Headphones size={16} className="text-blue-500" />
+                        {chapters[currentChapterIndex]?.title}
+                    </div>
+                    <button onClick={() => { stopAudio(); setShowAudioPlayer(false); }}><X size={20} /></button>
+                </div>
+                <div className="flex items-center justify-between gap-4">
+                    <select 
+                       className={`text-xs p-2 rounded border outline-none max-w-[120px] truncate ${inputClasses}`}
+                       value={selectedVoice?.name}
+                       onChange={(e) => setSelectedVoice(audioVoices.find(v => v.name === e.target.value))}
+                    >
+                        {audioVoices.map(v => <option key={v.name} value={v.name}>{v.name}</option>)}
+                    </select>
+                    <div className="flex items-center gap-4">
+                        <button onClick={stopAudio} title="Dừng"><StopCircle size={24} /></button>
+                        <button onClick={toggleAudio} className="text-blue-500 hover:scale-110 transition-transform">
+                            {isSpeaking ? <PauseCircle size={40} fill="currentColor" /> : <PlayCircle size={40} fill="currentColor" />}
+                        </button>
+                    </div>
+                    <select 
+                       className={`text-xs p-2 rounded border outline-none ${inputClasses}`}
+                       value={audioRate}
+                       onChange={(e) => setAudioRate(parseFloat(e.target.value))}
+                    >
+                        <option value="0.75">0.75x</option>
+                        <option value="1.0">1.0x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="2.0">2.0x</option>
+                    </select>
+                </div>
+            </div>
         </div>
       )}
 
@@ -260,7 +416,6 @@ export default function App() {
         </div>
       )}
 
-      {/* Chapter List Sidebar */}
       {showChapterList && (
         <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex justify-end animate-fade-in" onClick={() => setShowChapterList(false)}>
            <div className={`w-full max-w-xs h-full ${isDarkMode ? 'bg-[#171717] border-l border-[#262626]' : 'bg-white border-l border-gray-200'} shadow-2xl flex flex-col`} onClick={(e) => e.stopPropagation()}>
@@ -273,97 +428,35 @@ export default function App() {
       {/* Header */}
       <header className={`sticky top-0 z-50 h-16 flex items-center justify-between px-4 lg:px-8 border-b backdrop-blur-sm ${headerClasses}`}>
         <div className="flex items-center gap-4">
-          <div onClick={goHome} className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity">
-            <Book size={24} className="text-blue-500" />
-            <span className="font-bold text-xl hidden sm:inline font-sans tracking-wide">Web Truyện</span>
-          </div>
-          {/* Nút Tủ Sách (History) */}
-          <button 
-            onClick={goHistory} 
-            className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${view === 'history' ? 'bg-blue-500/10 text-blue-500' : 'hover:bg-gray-500/10 opacity-70 hover:opacity-100'}`}
-          >
-            <Clock size={16} /> <span className="hidden sm:inline">Tủ sách</span>
-          </button>
+          <div onClick={goHome} className="flex items-center gap-2 cursor-pointer hover:opacity-80 transition-opacity"><Book size={24} className="text-blue-500" /><span className="font-bold text-xl hidden sm:inline font-sans tracking-wide">Web Truyện</span></div>
+          <button onClick={goHistory} className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${view === 'history' ? 'bg-blue-500/10 text-blue-500' : 'hover:bg-gray-500/10 opacity-70 hover:opacity-100'}`}><Clock size={16} /> <span className="hidden sm:inline">Tủ sách</span></button>
         </div>
-        
-        {/* Search Bar */}
-        {(view === 'home' || view === 'history') && (
-          <div className="flex-1 max-w-md mx-4 hidden md:block relative">
-             <input type="text" placeholder="Tìm truyện..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className={`w-full pl-10 pr-4 py-2 rounded-full outline-none border focus:border-blue-500 transition-all ${inputClasses}`} />
-             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
-          </div>
-        )}
-
+        {(view === 'home' || view === 'history') && <div className="flex-1 max-w-md mx-4 hidden md:block relative"><input type="text" placeholder="Tìm truyện..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className={`w-full pl-10 pr-4 py-2 rounded-full outline-none border focus:border-blue-500 transition-all ${inputClasses}`} /><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} /></div>}
         <div className="flex items-center gap-3 text-sm font-medium">
           <button onClick={toggleTheme} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-[#262626] text-yellow-400' : 'hover:bg-gray-100 text-gray-600'}`}>{isDarkMode ? <Sun size={20} /> : <Moon size={20} />}</button>
-          {isAdmin ? (
-            <div className="flex items-center gap-2"><span className="text-blue-500 font-bold hidden sm:inline">Admin</span><button onClick={handleLogout} className="p-2 rounded hover:bg-red-500/10 hover:text-red-500 transition-colors" title="Đăng xuất"><LogOut size={20} /></button></div>
-          ) : (
-            <button onClick={() => setShowLoginModal(true)} className={`flex items-center gap-1 px-4 py-2 rounded transition-colors ${isDarkMode ? 'bg-[#262626] hover:bg-[#404040]' : 'bg-gray-100 hover:bg-gray-200'}`}><User size={18} /> <span className="hidden sm:inline">Đăng nhập</span></button>
-          )}
+          {isAdmin ? (<div className="flex items-center gap-2"><span className="text-blue-500 font-bold hidden sm:inline">Admin</span><button onClick={handleLogout} className="p-2 rounded hover:bg-red-500/10 hover:text-red-500 transition-colors" title="Đăng xuất"><LogOut size={20} /></button></div>) : (<button onClick={() => setShowLoginModal(true)} className={`flex items-center gap-1 px-4 py-2 rounded transition-colors ${isDarkMode ? 'bg-[#262626] hover:bg-[#404040]' : 'bg-gray-100 hover:bg-gray-200'}`}><User size={18} /> <span className="hidden sm:inline">Đăng nhập</span></button>)}
         </div>
       </header>
 
-      {/* Login Modal */}
-      {showLoginModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
-          <div className={`${cardClasses} p-6 rounded-lg w-full max-w-sm border`}>
-            <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Đăng nhập Admin</h3><button onClick={() => setShowLoginModal(false)}><X size={20} /></button></div>
-            <form onSubmit={handleLogin} className="flex flex-col gap-4">
-              <input type="text" placeholder="Tài khoản" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className={`p-3 rounded outline-none border ${inputClasses}`} />
-              <input type="password" placeholder="Mật khẩu" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} className={`p-3 rounded outline-none border ${inputClasses}`} />
-              <button type="submit" className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>Đăng nhập</button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Add/Edit Modals... */}
-      {showAddNovelModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
-          <div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}>
-            <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold flex items-center gap-2"><Book size={20}/> Thêm Truyện Mới</h3><button onClick={() => setShowAddNovelModal(false)}><X size={20} /></button></div>
-            <form onSubmit={handleAddNovel} className="flex flex-col gap-4">
-              <div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tên truyện</label><input type="text" value={newNovelTitle} onChange={e => setNewNovelTitle(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div>
-              <div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tác giả</label><input type="text" value={newNovelAuthor} onChange={e => setNewNovelAuthor(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div>
-              <div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Link Ảnh Bìa</label><input type="text" value={newNovelCover} onChange={e => setNewNovelCover(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div>
-              <button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>{isSubmitting ? 'Đang tạo...' : 'Tạo Truyện'}</button>
-            </form>
-          </div>
-        </div>
-      )}
-      {showEditNovelModal && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
-          <div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}>
-            <div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold flex items-center gap-2"><Settings size={20}/> Sửa Thông Tin</h3><button onClick={() => setShowEditNovelModal(false)}><X size={20} /></button></div>
-            <form onSubmit={handleUpdateNovel} className="flex flex-col gap-4">
-              <div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tên truyện</label><input type="text" value={newNovelTitle} onChange={e => setNewNovelTitle(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div>
-              <div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tác giả</label><input type="text" value={newNovelAuthor} onChange={e => setNewNovelAuthor(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div>
-              <div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Link Ảnh Bìa</label><input type="text" value={newNovelCover} onChange={e => setNewNovelCover(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div>
-              <button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>{isSubmitting ? 'Đang lưu...' : 'Lưu Thay Đổi'}</button>
-            </form>
-          </div>
-        </div>
-      )}
+      {showLoginModal && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in"><div className={`${cardClasses} p-6 rounded-lg w-full max-w-sm border`}><div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold">Đăng nhập Admin</h3><button onClick={() => setShowLoginModal(false)}><X size={20} /></button></div><form onSubmit={handleLogin} className="flex flex-col gap-4"><input type="text" placeholder="Tài khoản" value={usernameInput} onChange={e => setUsernameInput(e.target.value)} className={`p-3 rounded outline-none border ${inputClasses}`} /><input type="password" placeholder="Mật khẩu" value={passwordInput} onChange={e => setPasswordInput(e.target.value)} className={`p-3 rounded outline-none border ${inputClasses}`} /><button type="submit" className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>Đăng nhập</button></form></div></div>}
+      {showAddNovelModal && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in"><div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}><div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold flex items-center gap-2"><Book size={20}/> Thêm Truyện Mới</h3><button onClick={() => setShowAddNovelModal(false)}><X size={20} /></button></div><form onSubmit={handleAddNovel} className="flex flex-col gap-4"><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tên truyện</label><input type="text" value={newNovelTitle} onChange={e => setNewNovelTitle(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} placeholder="Ví dụ: Nhân Tổ Truyện" /></div><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tác giả</label><input type="text" value={newNovelAuthor} onChange={e => setNewNovelAuthor(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} placeholder="Ví dụ: Cổ Chân Nhân" /></div><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Link Ảnh Bìa</label><input type="text" value={newNovelCover} onChange={e => setNewNovelCover(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} placeholder="https://..." /></div><button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>{isSubmitting ? 'Đang tạo...' : 'Tạo Truyện'}</button></form></div></div>}
+      {showEditNovelModal && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in"><div className={`${cardClasses} p-6 rounded-lg w-full max-w-md border`}><div className="flex justify-between items-center mb-4"><h3 className="text-xl font-bold flex items-center gap-2"><Settings size={20}/> Sửa Thông Tin Truyện</h3><button onClick={() => setShowEditNovelModal(false)}><X size={20} /></button></div><form onSubmit={handleUpdateNovel} className="flex flex-col gap-4"><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tên truyện</label><input type="text" value={newNovelTitle} onChange={e => setNewNovelTitle(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Tác giả</label><input type="text" value={newNovelAuthor} onChange={e => setNewNovelAuthor(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div><div><label className="text-xs font-bold uppercase opacity-70 mb-1 block">Link Ảnh Bìa</label><input type="text" value={newNovelCover} onChange={e => setNewNovelCover(e.target.value)} className={`w-full p-2 rounded outline-none border ${inputClasses}`} /></div><button type="submit" disabled={isSubmitting} className={`py-3 rounded font-bold mt-2 ${buttonPrimary}`}>{isSubmitting ? 'Đang lưu...' : 'Lưu Thay Đổi'}</button></form></div></div>}
 
       <main className="max-w-7xl mx-auto p-4 lg:py-8 min-h-[calc(100vh-64px)]">
-        
-        {/* HOME VIEW & HISTORY VIEW */}
         {(view === 'home' || view === 'history') && (
           <div className="animate-fade-in">
             <div className="text-center mb-10">
-               <h1 className="text-3xl md:text-4xl font-bold mb-3 font-serif">
-                 {view === 'history' ? 'Tủ Sách Của Bạn' : 'Kho Tàng Truyện Chữ'}
-               </h1>
-               <p className="opacity-70 max-w-xl mx-auto">
-                 {view === 'history' ? 'Danh sách các truyện bạn đã đọc gần đây.' : 'Đọc truyện online, cập nhật liên tục.'}
-               </p>
-               {/* Mobile Search */}
+               <h1 className="text-3xl md:text-4xl font-bold mb-3 font-serif">{view === 'history' ? 'Tủ Sách Của Bạn' : 'Kho Tàng Truyện Chữ'}</h1>
+               <p className="opacity-70 max-w-xl mx-auto">{view === 'history' ? 'Danh sách các truyện bạn đã đọc gần đây.' : 'Đọc truyện online, cập nhật liên tục.'}</p>
                <div className="mt-4 md:hidden relative max-w-xs mx-auto"><input type="text" placeholder="Tìm kiếm..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className={`w-full pl-10 pr-4 py-2 rounded-full outline-none border focus:border-blue-500 ${inputClasses}`} /><Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} /></div>
             </div>
 
             {view === 'home' && isAdmin && (
               <div className="flex justify-end gap-3 mb-6">
+                <label className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-transform active:scale-95 cursor-pointer bg-green-600 hover:bg-green-700 text-white shadow-lg`}>
+                   <Upload size={20} /> Import EPUB
+                   <input type="file" accept=".epub" className="hidden" onChange={handleEpubImport} />
+                </label>
                 <button onClick={() => {setNewNovelTitle(''); setNewNovelAuthor(''); setNewNovelCover(''); setShowAddNovelModal(true)}} className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-transform active:scale-95 ${buttonPrimary}`}><Plus size={20} /> Thêm Truyện Mới</button>
               </div>
             )}
@@ -379,12 +472,7 @@ export default function App() {
                     <div className="aspect-[2/3] overflow-hidden relative">
                        <img src={novel.cover} alt={novel.title} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" onError={(e) => e.target.src='https://placehold.co/400x600?text=No+Cover'} />
                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60 group-hover:opacity-40 transition-opacity"></div>
-                       {/* Hiển thị tiến độ nếu có */}
-                       {readingProgress[novel.id] !== undefined && (
-                         <div className="absolute top-2 left-2 bg-blue-600 text-white text-xs px-2 py-1 rounded-full shadow-lg flex items-center gap-1 font-bold">
-                           <Bookmark size={10} fill="currentColor" /> Đang đọc
-                         </div>
-                       )}
+                       {readingProgress[novel.id] !== undefined && (<div className="absolute top-2 left-2 bg-blue-600 text-white text-xs px-2 py-1 rounded-full shadow-lg flex items-center gap-1 font-bold"><Bookmark size={10} fill="currentColor" /> Đang đọc</div>)}
                        {isAdmin && <button onClick={(e) => requestDelete(e, 'novel', novel.id, novel.title)} className="absolute top-2 right-2 p-2 bg-red-600 text-white rounded-full hover:bg-red-700 z-20 shadow-lg" title="Xóa"><Trash2 size={18} /></button>}
                     </div>
                     <div className="p-4">
@@ -407,10 +495,15 @@ export default function App() {
                    <div className={`${cardClasses} rounded-xl p-4 sticky top-24 border`}>
                       <div className="aspect-[2/3] rounded-lg overflow-hidden mb-4 shadow-lg relative group">
                          <img src={selectedNovel.cover} className="w-full h-full object-cover" onError={(e) => e.target.src='https://placehold.co/400x600?text=No+Cover'} />
-                         {isAdmin && <button onClick={openEditNovelModal} className="absolute bottom-2 right-2 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity" title="Sửa ảnh bìa"><Edit size={18} /></button>}
+                         {isAdmin && (
+                           <button onClick={openEditNovelModal} className="absolute bottom-2 right-2 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 shadow-lg opacity-0 group-hover:opacity-100 transition-opacity" title="Sửa ảnh bìa"><Edit size={18} /></button>
+                         )}
                       </div>
                       <h1 className="text-2xl font-bold font-serif mb-2 text-center">{selectedNovel.title}</h1>
-                      <p className="text-center opacity-70 text-sm mb-6 flex items-center justify-center gap-2">{selectedNovel.author}{isAdmin && <button onClick={openEditNovelModal} className="text-blue-500 hover:text-blue-400" title="Sửa thông tin"><Edit size={14} /></button>}</p>
+                      <p className="text-center opacity-70 text-sm mb-6 flex items-center justify-center gap-2">
+                        {selectedNovel.author}
+                        {isAdmin && <button onClick={openEditNovelModal} className="text-blue-500 hover:text-blue-400" title="Sửa thông tin"><Edit size={14} /></button>}
+                      </p>
                       
                       <button onClick={() => chapters.length > 0 && readChapter(0)} disabled={chapters.length === 0} className={`w-full py-3 rounded-lg font-bold flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed mb-3 ${buttonPrimary}`}><Play size={18} fill="currentColor" /> Đọc Từ Đầu</button>
                       {readingProgress[selectedNovel.id] !== undefined && chapters[readingProgress[selectedNovel.id]] && (
@@ -465,28 +558,16 @@ export default function App() {
              <div className="sticky top-0 z-30 flex justify-between items-center mb-8 border-b border-inherit bg-inherit py-3 opacity-95">
                 <button onClick={() => setView('detail')} className="flex items-center gap-1 hover:text-blue-500 opacity-70 hover:opacity-100 transition-all"><ChevronLeft size={20} /> Mục lục</button>
                 <div className="flex items-center gap-2">
-                   {/* Nút Tự động cuộn (MỚI) */}
-                   <button 
-                      onClick={() => setIsAutoScrolling(!isAutoScrolling)} 
-                      className={`p-2 rounded transition-colors ${isAutoScrolling ? 'bg-blue-600 text-white animate-pulse' : 'hover:bg-black/5 dark:hover:bg-white/10'}`} 
-                      title="Tự động cuộn"
-                   >
-                      {isAutoScrolling ? <PauseCircle size={20} /> : <ArrowDownCircle size={20} />}
-                   </button>
-
-                   {/* Nút Toàn màn hình (MỚI) */}
+                   <button onClick={() => { setShowAudioPlayer(true); playAudio(); }} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors text-blue-500" title="Nghe truyện"><Headphones size={20} /> <span className="hidden sm:inline font-medium">Nghe</span></button>
+                   <button onClick={() => setIsAutoScrolling(!isAutoScrolling)} className={`p-2 rounded transition-colors ${isAutoScrolling ? 'bg-blue-600 text-white animate-pulse' : 'hover:bg-black/5 dark:hover:bg-white/10'}`} title="Tự động cuộn">{isAutoScrolling ? <PauseCircle size={20} /> : <ArrowDownCircle size={20} />}</button>
                    <button onClick={toggleFullScreen} className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors hidden md:block" title="Toàn màn hình"><Maximize size={20} /></button>
-
                    <button onClick={() => setShowReaderSettings(!showReaderSettings)} className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors" title="Cài đặt hiển thị"><Settings size={20} /></button>
                    <button onClick={() => setShowChapterList(true)} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"><List size={20} /> <span className="hidden sm:inline font-medium">Danh sách</span></button>
                 </div>
              </div>
              <article>
                 <h2 className="text-3xl font-bold mb-8 text-center font-serif leading-tight text-blue-500">{chapters[currentChapterIndex].title}</h2>
-                <div 
-                   className={`max-w-none whitespace-pre-wrap ${readerSettings.fontFamily} ${readerSettings.textAlign}`}
-                   style={{ fontSize: `${readerSettings.fontSize}px`, lineHeight: readerSettings.lineHeight }}
-                >
+                <div className={`max-w-none whitespace-pre-wrap ${readerSettings.fontFamily} ${readerSettings.textAlign}`} style={{ fontSize: `${readerSettings.fontSize}px`, lineHeight: readerSettings.lineHeight }}>
                    {chapters[currentChapterIndex].content}
                 </div>
              </article>
