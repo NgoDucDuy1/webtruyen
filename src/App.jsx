@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit } from 'lucide-react';
+import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, Upload, Loader } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
@@ -27,6 +27,41 @@ if (firebaseConfig && firebaseConfig.apiKey) {
     console.error("Lỗi khởi tạo Firebase:", error);
   }
 }
+
+// --- HÀM HỖ TRỢ LOAD THƯ VIỆN EPUB (Thêm mới) ---
+const loadScript = (src) => {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) {
+      resolve(); 
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = src;
+    script.async = true;
+    script.onload = resolve;
+    script.onerror = () => reject(new Error(`Không thể tải: ${src}`));
+    document.head.appendChild(script);
+  });
+};
+
+const loadEpubLibrary = async () => {
+  if (window.ePub) return window.ePub;
+  try {
+    // Phải load JSZip trước vì epub.js phụ thuộc vào nó
+    if (!window.JSZip) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js");
+    try {
+        await loadScript("https://unpkg.com/epubjs/dist/epub.min.js");
+    } catch (e) {
+        // Fallback nếu unpkg lỗi
+        await loadScript("https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js");
+    }
+    if (window.ePub) return window.ePub;
+    throw new Error("Không tìm thấy đối tượng window.ePub sau khi tải.");
+  } catch (error) {
+    console.error(error);
+    throw error;
+  }
+};
 
 export default function App() {
   // --- STATE ---
@@ -61,6 +96,10 @@ export default function App() {
   const [newChapterTitle, setNewChapterTitle] = useState('');
   const [newChapterContent, setNewChapterContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // --- STATE IMPORT (Thêm mới) ---
+  const [isImporting, setIsImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState('');
 
   // --- INIT ---
   useEffect(() => {
@@ -182,6 +221,120 @@ export default function App() {
     }
   };
 
+  // --- ACTIONS: EPUB IMPORT (Logic giống Vbook - Thêm mới) ---
+  const handleEpubImport = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setIsImporting(true);
+    setImportProgress('Đang tải thư viện xử lý EPUB...');
+
+    try {
+      const ePub = await loadEpubLibrary();
+      setImportProgress('Đang phân tích file...');
+      
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const book = ePub(event.target.result);
+          await book.ready;
+          
+          // 1. Lấy Metadata
+          const metadata = await book.loaded.metadata;
+          const title = metadata.title || file.name.replace('.epub', '');
+          const author = metadata.creator || 'Sưu tầm';
+          
+          // *Lưu ý: Không thể lưu Blob URL cover vào Firestore vì nó sẽ hết hạn. Dùng placeholder.
+          const coverUrl = `https://placehold.co/400x600?text=${encodeURIComponent(title.substring(0,20))}`;
+
+          setImportProgress(`Đang tạo truyện: ${title}...`);
+          
+          // 2. Tạo Novel trên Firestore
+          const novelRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels'), {
+            title: title,
+            author: author,
+            cover: coverUrl,
+            createdAt: Date.now(),
+            chapterCount: 0
+          });
+
+          // 3. Duyệt qua Spine (Mục lục cốt lõi)
+          let count = 0;
+          const spineItems = (book.spine && book.spine.items) ? book.spine.items : [];
+          
+          for (let i = 0; i < spineItems.length; i++) {
+            const item = spineItems[i];
+            // Bỏ qua các file không phải chương truyện (bìa, mục lục, trang bản quyền)
+            const hrefLower = item.href ? item.href.toLowerCase() : "";
+            if (hrefLower.includes('cover') || hrefLower.includes('titlepage') || hrefLower.includes('toc') || hrefLower.includes('copyright')) continue;
+
+            try {
+              // Load nội dung HTML của chương
+              const docObj = await book.load(item.href); 
+              if (!docObj) continue;
+
+              // --- VBOOK-LIKE CLEANING ---
+              // Lấy text thuần, loại bỏ script, style, giữ lại cấu trúc đoạn văn
+              // Dùng DOMParser để an toàn
+              let rawContent = "";
+              let chapTitle = `Chương ${count + 1}`;
+
+              // Thử tìm tiêu đề trong thẻ h1, h2
+              const hTag = docObj.querySelector('h1, h2, h3, .title');
+              if (hTag) {
+                 chapTitle = hTag.innerText.trim();
+                 // Xoá tiêu đề khỏi nội dung để đỡ lặp
+                 hTag.remove();
+              }
+
+              // Làm sạch nội dung: Chỉ lấy text của các thẻ p, div, br
+              // Cách đơn giản nhất: Lấy innerText của body
+              if (docObj.body) {
+                  rawContent = docObj.body.innerText;
+              }
+
+              // Format lại: xoá khoảng trắng thừa, đảm bảo xuống dòng chuẩn
+              rawContent = rawContent.replace(/\n\s*\n/g, '\n\n').trim();
+
+              if (rawContent.length > 50) { // Chỉ lấy nếu có nội dung đáng kể
+                  setImportProgress(`Đang tải lên: ${chapTitle} (${i + 1}/${spineItems.length})`);
+                  
+                  // Firestore giới hạn 1MB/doc. Cắt bớt nếu quá dài (hiếm gặp với 1 chương)
+                  if (rawContent.length > 900000) rawContent = rawContent.substring(0, 900000) + "...(cắt)";
+
+                  await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), {
+                    title: chapTitle,
+                    content: rawContent,
+                    createdAt: Date.now() + i // +i để giữ thứ tự sort
+                  });
+                  count++;
+              }
+            } catch (err) {
+              console.warn("Lỗi đọc chương:", err);
+            }
+          }
+
+          // 4. Cập nhật số chương
+          await updateDoc(novelRef, { chapterCount: count });
+          
+          alert(`Nhập thành công!\nTruyện: ${title}\nSố chương: ${count}`);
+          setImportProgress('');
+          setIsImporting(false);
+
+        } catch (parseError) {
+           alert("Lỗi phân tích EPUB: " + parseError.message);
+           setIsImporting(false);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+
+    } catch (libError) {
+      alert("Lỗi tải thư viện: " + libError.message);
+      setIsImporting(false);
+    } finally {
+        e.target.value = null; // Reset input file
+    }
+  };
+
   // --- ACTIONS: EDIT ---
   const openEditNovelModal = () => {
     if (!selectedNovel) return;
@@ -281,6 +434,15 @@ export default function App() {
   return (
     <div className={`min-h-screen font-sans transition-colors duration-300 ${themeClasses} selection:bg-blue-500 selection:text-white`}>
       
+      {/* --- LOADING OVERLAY (Import EPUB) --- */}
+      {isImporting && (
+        <div className="fixed inset-0 z-[100] bg-black/80 flex flex-col items-center justify-center p-4 animate-fade-in">
+           <Loader size={48} className="text-blue-500 animate-spin mb-4" />
+           <h3 className="text-xl font-bold text-white mb-2">Đang xử lý EPUB...</h3>
+           <p className="text-gray-400 text-center animate-pulse font-mono text-sm">{importProgress}</p>
+        </div>
+      )}
+
       {deleteModal.show && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-fade-in">
           <div className={`${cardClasses} p-6 rounded-lg w-full max-w-sm border`}>
@@ -400,6 +562,11 @@ export default function App() {
             </div>
             {isAdmin && (
               <div className="flex justify-end gap-3 mb-6">
+                 {/* --- NÚT IMPORT EPUB (Thêm mới) --- */}
+                 <label className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-transform active:scale-95 cursor-pointer bg-green-600 hover:bg-green-700 text-white shadow-lg`}>
+                    <Upload size={20} /> Import EPUB
+                    <input type="file" accept=".epub" className="hidden" onChange={handleEpubImport} />
+                 </label>
                 <button onClick={() => {setNewNovelTitle(''); setNewNovelAuthor(''); setNewNovelCover(''); setShowAddNovelModal(true)}} className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-transform active:scale-95 ${buttonPrimary}`}><Plus size={20} /> Thêm Truyện Mới</button>
               </div>
             )}
