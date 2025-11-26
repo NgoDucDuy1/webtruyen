@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, FilePenLine } from 'lucide-react';
+import { Book, ChevronLeft, ChevronRight, Menu, Search, Play, RotateCcw, Bookmark, List, Plus, Trash2, Lock, Save, User, LogOut, Settings, Image as ImageIcon, Moon, Sun, Home, AlertTriangle, X, SkipForward, Edit, FilePenLine, Type, AlignJustify, AlignLeft } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, setDoc, getDoc, updateDoc } from 'firebase/firestore';
@@ -45,6 +45,15 @@ export default function App() {
   const [showChapterList, setShowChapterList] = useState(false);
   const [readingProgress, setReadingProgress] = useState({}); 
 
+  // Reader Settings State (MỚI)
+  const [showReaderSettings, setShowReaderSettings] = useState(false);
+  const [readerSettings, setReaderSettings] = useState({
+    fontSize: 18,
+    lineHeight: 1.6,
+    fontFamily: 'font-serif', // hoặc 'font-sans'
+    textAlign: 'text-justify'
+  });
+
   // Admin State
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLoginModal, setShowLoginModal] = useState(false);
@@ -55,7 +64,6 @@ export default function App() {
   const [usernameInput, setUsernameInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   
-  // Delete Modal State
   const [deleteModal, setDeleteModal] = useState({ show: false, type: null, id: null, title: '' });
 
   // Forms
@@ -90,6 +98,10 @@ export default function App() {
     const savedProgress = JSON.parse(localStorage.getItem('novel_progress') || '{}');
     setReadingProgress(savedProgress);
 
+    // Load reader settings
+    const savedReaderSettings = JSON.parse(localStorage.getItem('novel_reader_settings'));
+    if (savedReaderSettings) setReaderSettings(savedReaderSettings);
+
     return () => unsubscribe();
   }, []);
 
@@ -97,6 +109,13 @@ export default function App() {
     const newProgress = { ...readingProgress, [novelId]: chapterIndex };
     setReadingProgress(newProgress);
     localStorage.setItem('novel_progress', JSON.stringify(newProgress));
+  };
+
+  // Lưu cài đặt đọc truyện
+  const updateReaderSettings = (newSettings) => {
+    const updated = { ...readerSettings, ...newSettings };
+    setReaderSettings(updated);
+    localStorage.setItem('novel_reader_settings', JSON.stringify(updated));
   };
 
   // --- FETCH DATA ---
@@ -124,6 +143,14 @@ export default function App() {
     });
     return () => unsubscribe();
   }, [selectedNovel, user]);
+
+  // --- FILTERED NOVELS (SEARCH) ---
+  const filteredNovels = novels.filter(novel => {
+    if (!searchTerm) return true;
+    const lowerTerm = searchTerm.toLowerCase();
+    return novel.title.toLowerCase().includes(lowerTerm) || 
+           novel.author.toLowerCase().includes(lowerTerm);
+  });
 
   // --- ACTIONS: ADMIN ---
   const handleLogin = (e) => {
@@ -314,6 +341,64 @@ export default function App() {
         </div>
       )}
 
+      {/* SHOW READER SETTINGS POPUP */}
+      {showReaderSettings && (
+        <div className="fixed right-4 top-16 z-[90] animate-fade-in">
+           <div className={`${cardClasses} p-4 rounded-lg shadow-2xl border w-72`}>
+              <div className="flex justify-between items-center mb-3 border-b border-gray-500/20 pb-2">
+                  <h3 className="font-bold flex items-center gap-2"><Type size={16}/> Cài đặt đọc</h3>
+                  <button onClick={() => setShowReaderSettings(false)}><X size={16}/></button>
+              </div>
+              
+              {/* Font Size */}
+              <div className="mb-4">
+                 <div className="flex justify-between text-sm mb-1 opacity-80"><span>Cỡ chữ</span><span>{readerSettings.fontSize}px</span></div>
+                 <input 
+                   type="range" min="14" max="32" step="1" 
+                   value={readerSettings.fontSize} 
+                   onChange={(e) => updateReaderSettings({ fontSize: parseInt(e.target.value) })}
+                   className="w-full accent-blue-600 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                 />
+              </div>
+
+              {/* Line Height */}
+              <div className="mb-4">
+                 <div className="text-sm mb-2 opacity-80">Dãn dòng</div>
+                 <div className="flex gap-2 bg-gray-500/10 p-1 rounded">
+                    {[1.4, 1.6, 1.8, 2.0].map(lh => (
+                       <button 
+                         key={lh}
+                         onClick={() => updateReaderSettings({ lineHeight: lh })}
+                         className={`flex-1 py-1 rounded text-xs font-medium transition-colors ${readerSettings.lineHeight === lh ? 'bg-blue-600 text-white' : 'hover:bg-gray-500/20'}`}
+                       >
+                         {lh}
+                       </button>
+                    ))}
+                 </div>
+              </div>
+
+              {/* Font Family */}
+              <div className="mb-2">
+                 <div className="text-sm mb-2 opacity-80">Kiểu chữ</div>
+                 <div className="flex gap-2">
+                    <button 
+                      onClick={() => updateReaderSettings({ fontFamily: 'font-serif' })}
+                      className={`flex-1 py-2 rounded border text-sm font-serif ${readerSettings.fontFamily === 'font-serif' ? 'border-blue-600 text-blue-600 bg-blue-500/10' : 'border-gray-500/30 hover:border-gray-500/60'}`}
+                    >
+                      Có chân
+                    </button>
+                    <button 
+                      onClick={() => updateReaderSettings({ fontFamily: 'font-sans' })}
+                      className={`flex-1 py-2 rounded border text-sm font-sans ${readerSettings.fontFamily === 'font-sans' ? 'border-blue-600 text-blue-600 bg-blue-500/10' : 'border-gray-500/30 hover:border-gray-500/60'}`}
+                    >
+                      Không chân
+                    </button>
+                 </div>
+              </div>
+           </div>
+        </div>
+      )}
+
       {showChapterList && (
         <div className="fixed inset-0 z-[100] bg-black/50 backdrop-blur-sm flex justify-end animate-fade-in" onClick={() => setShowChapterList(false)}>
            <div className={`w-full max-w-xs h-full ${isDarkMode ? 'bg-[#171717] border-l border-[#262626]' : 'bg-white border-l border-gray-200'} shadow-2xl flex flex-col`} onClick={(e) => e.stopPropagation()}>
@@ -337,6 +422,21 @@ export default function App() {
           {view === 'home' ? <Book size={24} className="text-blue-500" /> : <Home size={24} className="text-blue-500" />}
           <span className="font-bold text-xl hidden sm:inline font-sans tracking-wide">Web Truyện</span>
         </div>
+        
+        {/* SEARCH BAR (NEW) */}
+        {view === 'home' && (
+          <div className="flex-1 max-w-md mx-4 hidden md:block relative">
+             <input 
+                type="text" 
+                placeholder="Tìm truyện, tác giả..." 
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                className={`w-full pl-10 pr-4 py-2 rounded-full outline-none border focus:border-blue-500 transition-all ${inputClasses}`}
+             />
+             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+          </div>
+        )}
+
         <div className="flex items-center gap-3 text-sm font-medium">
           <button onClick={toggleTheme} className={`p-2 rounded-full transition-colors ${isDarkMode ? 'hover:bg-[#262626] text-yellow-400' : 'hover:bg-gray-100 text-gray-600'}`}>
             {isDarkMode ? <Sun size={20} /> : <Moon size={20} />}
@@ -402,17 +502,33 @@ export default function App() {
             <div className="text-center mb-10">
                <h1 className="text-3xl md:text-4xl font-bold mb-3 font-serif">Kho Tàng Truyện Chữ</h1>
                <p className="opacity-70 max-w-xl mx-auto">Đọc truyện online, cập nhật liên tục.</p>
+               
+               {/* MOBILE SEARCH */}
+               <div className="mt-4 md:hidden relative max-w-xs mx-auto">
+                  <input 
+                    type="text" 
+                    placeholder="Tìm truyện..." 
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className={`w-full pl-10 pr-4 py-2 rounded-full outline-none border focus:border-blue-500 ${inputClasses}`}
+                  />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+               </div>
             </div>
             {isAdmin && (
               <div className="flex justify-end gap-3 mb-6">
                 <button onClick={() => {setNewNovelTitle(''); setNewNovelAuthor(''); setNewNovelCover(''); setShowAddNovelModal(true)}} className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-transform active:scale-95 ${buttonPrimary}`}><Plus size={20} /> Thêm Truyện Mới</button>
               </div>
             )}
+            
+            {/* NOVEL GRID with SEARCH FILTER */}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-              {novels.length === 0 ? (
-                <div className="col-span-full text-center py-20 opacity-50"><Book size={48} className="mx-auto mb-4" /><p>Chưa có truyện nào.</p></div>
+              {filteredNovels.length === 0 ? (
+                <div className="col-span-full text-center py-20 opacity-50">
+                   {searchTerm ? <p>Không tìm thấy truyện nào khớp với "{searchTerm}"</p> : <><Book size={48} className="mx-auto mb-4" /><p>Chưa có truyện nào.</p></>}
+                </div>
               ) : (
-                novels.map((novel) => (
+                filteredNovels.map((novel) => (
                   <div key={novel.id} onClick={() => {setSelectedNovel(novel); setView('detail'); window.scrollTo(0,0);}} className={`group relative rounded-xl overflow-hidden cursor-pointer transition-all hover:-translate-y-1 hover:shadow-2xl border ${cardClasses}`}>
                     <div className="aspect-[2/3] overflow-hidden relative">
                        <img src={novel.cover} alt={novel.title} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" onError={(e) => e.target.src='https://placehold.co/400x600?text=No+Cover'} />
@@ -505,13 +621,25 @@ export default function App() {
 
         {view === 'reader' && selectedNovel && chapters[currentChapterIndex] && (
           <div className="max-w-3xl mx-auto animate-fade-in pb-20">
-             <div className="sticky top-16 z-30 flex justify-between items-center mb-8 border-b border-inherit bg-inherit py-3 opacity-95">
+             <div className="sticky top-0 z-30 flex justify-between items-center mb-8 border-b border-inherit bg-inherit py-3 opacity-95">
                 <button onClick={() => setView('detail')} className="flex items-center gap-1 hover:text-blue-500 opacity-70 hover:opacity-100 transition-all"><ChevronLeft size={20} /> Mục lục</button>
-                <button onClick={() => setShowChapterList(true)} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"><List size={20} /> <span className="hidden sm:inline font-medium">Danh sách</span></button>
+                <div className="flex items-center gap-2">
+                   {/* Nút mở cài đặt đọc */}
+                   <button onClick={() => setShowReaderSettings(!showReaderSettings)} className="p-2 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors" title="Cài đặt hiển thị"><Settings size={20} /></button>
+                   <button onClick={() => setShowChapterList(true)} className="flex items-center gap-2 px-3 py-1.5 rounded hover:bg-black/5 dark:hover:bg-white/10 transition-colors"><List size={20} /> <span className="hidden sm:inline font-medium">Danh sách</span></button>
+                </div>
              </div>
              <article>
                 <h2 className="text-3xl font-bold mb-8 text-center font-serif leading-tight text-blue-500">{chapters[currentChapterIndex].title}</h2>
-                <div className="prose prose-lg dark:prose-invert max-w-none font-serif leading-loose whitespace-pre-wrap text-justify">{chapters[currentChapterIndex].content}</div>
+                <div 
+                   className={`max-w-none whitespace-pre-wrap text-justify ${readerSettings.fontFamily} ${readerSettings.textAlign}`}
+                   style={{ 
+                      fontSize: `${readerSettings.fontSize}px`, 
+                      lineHeight: readerSettings.lineHeight 
+                   }}
+                >
+                   {chapters[currentChapterIndex].content}
+                </div>
              </article>
              <div className="flex justify-between items-center mt-16 pt-8 border-t border-inherit">
                 <button onClick={() => readChapter(Math.max(0, currentChapterIndex - 1))} disabled={currentChapterIndex === 0} className={`px-5 py-2.5 rounded-lg flex items-center gap-2 font-medium transition-colors ${currentChapterIndex === 0 ? 'opacity-30 cursor-not-allowed' : 'bg-black/10 dark:bg-white/10 hover:bg-blue-600 hover:text-white'}`}><ChevronLeft size={18} /> Chương trước</button>
