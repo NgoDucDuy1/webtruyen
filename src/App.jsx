@@ -28,7 +28,7 @@ if (firebaseConfig && firebaseConfig.apiKey) {
   }
 }
 
-// --- HÀM HỖ TRỢ LOAD THƯ VIỆN EPUB (Thêm mới) ---
+// --- HÀM HỖ TRỢ LOAD THƯ VIỆN EPUB ---
 const loadScript = (src) => {
   return new Promise((resolve, reject) => {
     if (document.querySelector(`script[src="${src}"]`)) {
@@ -47,12 +47,10 @@ const loadScript = (src) => {
 const loadEpubLibrary = async () => {
   if (window.ePub) return window.ePub;
   try {
-    // Phải load JSZip trước vì epub.js phụ thuộc vào nó
     if (!window.JSZip) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.1.5/jszip.min.js");
     try {
         await loadScript("https://unpkg.com/epubjs/dist/epub.min.js");
     } catch (e) {
-        // Fallback nếu unpkg lỗi
         await loadScript("https://cdn.jsdelivr.net/npm/epubjs/dist/epub.min.js");
     }
     if (window.ePub) return window.ePub;
@@ -62,6 +60,19 @@ const loadEpubLibrary = async () => {
     throw error;
   }
 };
+
+// --- HÀM HỖ TRỢ SLUG (Thêm mới) ---
+const toSlug = (str) => {
+  if (!str) return '';
+  return str.toLowerCase()
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "") // Bỏ dấu tiếng Việt
+    .replace(/[đĐ]/g, 'd')
+    .replace(/\s+/g, '-') // Thay khoảng trắng bằng dấu gạch ngang
+    .replace(/[^\w\-]+/g, '') // Bỏ ký tự đặc biệt
+    .replace(/\-\-+/g, '-') // Bỏ gạch ngang thừa
+    .replace(/^-+/, '')
+    .replace(/-+$/, '');
+}
 
 export default function App() {
   // --- STATE ---
@@ -97,7 +108,7 @@ export default function App() {
   const [newChapterContent, setNewChapterContent] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // --- STATE IMPORT (Thêm mới) ---
+  // --- STATE IMPORT ---
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState('');
 
@@ -158,6 +169,66 @@ export default function App() {
     });
     return () => unsubscribe();
   }, [selectedNovel, user]);
+
+  // --- ROUTING / URL SYNC (Thêm mới: Cập nhật URL khi chuyển view) ---
+  useEffect(() => {
+    let path = '/';
+    const state = {};
+
+    if (view === 'home') {
+        path = '/';
+    } else if (view === 'detail' && selectedNovel) {
+        path = `/${toSlug(selectedNovel.title)}`;
+    } else if (view === 'reader' && selectedNovel && chapters[currentChapterIndex]) {
+        path = `/${toSlug(selectedNovel.title)}/${toSlug(chapters[currentChapterIndex].title)}`;
+    }
+
+    // Chỉ pushState nếu URL thực sự thay đổi để tránh loop
+    if (window.location.pathname !== path) {
+        window.history.pushState(state, '', path);
+    }
+  }, [view, selectedNovel, currentChapterIndex, chapters]);
+
+  // --- ROUTING / DEEP LINKING (Thêm mới: Xử lý khi tải trang từ URL) ---
+  // 1. Check Novel từ URL khi novels vừa load xong
+  useEffect(() => {
+    if (novels.length === 0) return;
+    const path = window.location.pathname;
+    if (path === '/' || path === '') return;
+
+    const parts = path.split('/').filter(p => p);
+    if (parts.length > 0) {
+        const novelSlug = parts[0];
+        // Tìm truyện khớp slug
+        const foundNovel = novels.find(n => toSlug(n.title) === novelSlug);
+        
+        if (foundNovel) {
+            // Nếu chưa chọn hoặc chọn sai thì chọn lại
+            if (!selectedNovel || selectedNovel.id !== foundNovel.id) {
+                setSelectedNovel(foundNovel);
+                setView('detail');
+            }
+        }
+    }
+  }, [novels]); // Chạy khi danh sách truyện load xong
+
+  // 2. Check Chapter từ URL khi chapters vừa load xong
+  useEffect(() => {
+     if (!selectedNovel || chapters.length === 0) return;
+     const path = window.location.pathname;
+     const parts = path.split('/').filter(p => p);
+
+     if (parts.length >= 2) {
+         const chapterSlug = parts[1];
+         // Tìm chương khớp slug
+         const foundIndex = chapters.findIndex(c => toSlug(c.title) === chapterSlug);
+         
+         if (foundIndex !== -1) {
+             setCurrentChapterIndex(foundIndex);
+             setView('reader');
+         }
+     }
+  }, [chapters]); // Chạy khi danh sách chương load xong
 
   // --- ACTIONS: ADMIN ---
   const handleLogin = (e) => {
@@ -221,7 +292,7 @@ export default function App() {
     }
   };
 
-  // --- ACTIONS: EPUB IMPORT (Logic giống Vbook - Thêm mới) ---
+  // --- ACTIONS: EPUB IMPORT ---
   const handleEpubImport = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -238,17 +309,13 @@ export default function App() {
           const book = ePub(event.target.result);
           await book.ready;
           
-          // 1. Lấy Metadata
           const metadata = await book.loaded.metadata;
           const title = metadata.title || file.name.replace('.epub', '');
           const author = metadata.creator || 'Sưu tầm';
-          
-          // *Lưu ý: Không thể lưu Blob URL cover vào Firestore vì nó sẽ hết hạn. Dùng placeholder.
           const coverUrl = `https://placehold.co/400x600?text=${encodeURIComponent(title.substring(0,20))}`;
 
           setImportProgress(`Đang tạo truyện: ${title}...`);
           
-          // 2. Tạo Novel trên Firestore
           const novelRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels'), {
             title: title,
             author: author,
@@ -257,54 +324,42 @@ export default function App() {
             chapterCount: 0
           });
 
-          // 3. Duyệt qua Spine (Mục lục cốt lõi)
           let count = 0;
           const spineItems = (book.spine && book.spine.items) ? book.spine.items : [];
           
           for (let i = 0; i < spineItems.length; i++) {
             const item = spineItems[i];
-            // Bỏ qua các file không phải chương truyện (bìa, mục lục, trang bản quyền)
             const hrefLower = item.href ? item.href.toLowerCase() : "";
             if (hrefLower.includes('cover') || hrefLower.includes('titlepage') || hrefLower.includes('toc') || hrefLower.includes('copyright')) continue;
 
             try {
-              // Load nội dung HTML của chương
               const docObj = await book.load(item.href); 
               if (!docObj) continue;
 
-              // --- VBOOK-LIKE CLEANING ---
-              // Lấy text thuần, loại bỏ script, style, giữ lại cấu trúc đoạn văn
-              // Dùng DOMParser để an toàn
               let rawContent = "";
               let chapTitle = `Chương ${count + 1}`;
 
-              // Thử tìm tiêu đề trong thẻ h1, h2
               const hTag = docObj.querySelector('h1, h2, h3, .title');
               if (hTag) {
                  chapTitle = hTag.innerText.trim();
-                 // Xoá tiêu đề khỏi nội dung để đỡ lặp
                  hTag.remove();
               }
 
-              // Làm sạch nội dung: Chỉ lấy text của các thẻ p, div, br
-              // Cách đơn giản nhất: Lấy innerText của body
               if (docObj.body) {
                   rawContent = docObj.body.innerText;
               }
 
-              // Format lại: xoá khoảng trắng thừa, đảm bảo xuống dòng chuẩn
               rawContent = rawContent.replace(/\n\s*\n/g, '\n\n').trim();
 
-              if (rawContent.length > 50) { // Chỉ lấy nếu có nội dung đáng kể
+              if (rawContent.length > 50) { 
                   setImportProgress(`Đang tải lên: ${chapTitle} (${i + 1}/${spineItems.length})`);
                   
-                  // Firestore giới hạn 1MB/doc. Cắt bớt nếu quá dài (hiếm gặp với 1 chương)
                   if (rawContent.length > 900000) rawContent = rawContent.substring(0, 900000) + "...(cắt)";
 
                   await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), {
                     title: chapTitle,
                     content: rawContent,
-                    createdAt: Date.now() + i // +i để giữ thứ tự sort
+                    createdAt: Date.now() + i 
                   });
                   count++;
               }
@@ -313,7 +368,6 @@ export default function App() {
             }
           }
 
-          // 4. Cập nhật số chương
           await updateDoc(novelRef, { chapterCount: count });
           
           alert(`Nhập thành công!\nTruyện: ${title}\nSố chương: ${count}`);
@@ -562,7 +616,7 @@ export default function App() {
             </div>
             {isAdmin && (
               <div className="flex justify-end gap-3 mb-6">
-                 {/* --- NÚT IMPORT EPUB (Thêm mới) --- */}
+                 {/* --- NÚT IMPORT EPUB --- */}
                  <label className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-bold transition-transform active:scale-95 cursor-pointer bg-green-600 hover:bg-green-700 text-white shadow-lg`}>
                     <Upload size={20} /> Import EPUB
                     <input type="file" accept=".epub" className="hidden" onChange={handleEpubImport} />
@@ -688,6 +742,3 @@ export default function App() {
     </div>
   );
 }
-
-
- 
