@@ -61,7 +61,7 @@ const loadEpubLibrary = async () => {
   }
 };
 
-// --- HÀM HỖ TRỢ SLUG (Thêm mới) ---
+// --- HÀM HỖ TRỢ SLUG ---
 const toSlug = (str) => {
   if (!str) return '';
   return str.toLowerCase()
@@ -112,8 +112,9 @@ export default function App() {
   const [isImporting, setIsImporting] = useState(false);
   const [importProgress, setImportProgress] = useState('');
 
-  // --- STATE LIMIT (TỐI ƯU LOAD TRUYỆN) ---
-  const [chapterLimit, setChapterLimit] = useState(50);
+  // --- STATE NỘI DUNG CHƯƠNG (MỚI: Tách nội dung khỏi danh sách để load nhanh) ---
+  const [activeChapterContent, setActiveChapterContent] = useState('');
+  const [isLoadingContent, setIsLoadingContent] = useState(false);
 
   // --- INIT ---
   useEffect(() => {
@@ -164,23 +165,23 @@ export default function App() {
       setChapters([]);
       return;
     }
-    // TỐI ƯU: Sử dụng query và limit để chỉ tải số lượng chương giới hạn
+    
+    // --- TỐI ƯU LẠI: KHÔNG DÙNG LIMIT ĐỂ LẤY HẾT MỤC LỤC, NHƯNG NỘI DUNG SẼ NHẸ ---
+    // Với code Import mới, 'chapters' sẽ không chứa nội dung dài nữa nên load rất nhanh.
     const qChapters = query(
       collection(db, 'artifacts', appId, 'public', 'data', 'novels', selectedNovel.id, 'chapters'),
-      orderBy('createdAt', 'asc'), // Sắp xếp để lấy đúng thứ tự
-      limit(chapterLimit) // Giới hạn số lượng tải về
+      orderBy('createdAt', 'asc')
     );
 
     const unsubscribe = onSnapshot(qChapters, (snapshot) => {
       const fetchedChapters = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      // Vẫn sort client side để đảm bảo an toàn
       fetchedChapters.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
       setChapters(fetchedChapters);
     });
     return () => unsubscribe();
-  }, [selectedNovel, user, chapterLimit]); // Re-run khi chapterLimit thay đổi
+  }, [selectedNovel, user]);
 
-  // --- ROUTING / URL SYNC (Thêm mới: Cập nhật URL khi chuyển view) ---
+  // --- ROUTING / URL SYNC ---
   useEffect(() => {
     let path = '/';
     const state = {};
@@ -193,14 +194,12 @@ export default function App() {
         path = `/${toSlug(selectedNovel.title)}/${toSlug(chapters[currentChapterIndex].title)}`;
     }
 
-    // Chỉ pushState nếu URL thực sự thay đổi để tránh loop
     if (window.location.pathname !== path) {
         window.history.pushState(state, '', path);
     }
   }, [view, selectedNovel, currentChapterIndex, chapters]);
 
-  // --- ROUTING / DEEP LINKING (Thêm mới: Xử lý khi tải trang từ URL) ---
-  // 1. Check Novel từ URL khi novels vừa load xong
+  // --- ROUTING / DEEP LINKING ---
   useEffect(() => {
     if (novels.length === 0) return;
     const path = window.location.pathname;
@@ -209,21 +208,16 @@ export default function App() {
     const parts = path.split('/').filter(p => p);
     if (parts.length > 0) {
         const novelSlug = parts[0];
-        // Tìm truyện khớp slug
         const foundNovel = novels.find(n => toSlug(n.title) === novelSlug);
-        
         if (foundNovel) {
-            // Nếu chưa chọn hoặc chọn sai thì chọn lại
             if (!selectedNovel || selectedNovel.id !== foundNovel.id) {
                 setSelectedNovel(foundNovel);
-                setChapterLimit(50); // Reset limit khi vào truyện mới từ URL
                 setView('detail');
             }
         }
     }
-  }, [novels]); // Chạy khi danh sách truyện load xong
+  }, [novels]);
 
-  // 2. Check Chapter từ URL khi chapters vừa load xong
   useEffect(() => {
      if (!selectedNovel || chapters.length === 0) return;
      const path = window.location.pathname;
@@ -231,15 +225,51 @@ export default function App() {
 
      if (parts.length >= 2) {
          const chapterSlug = parts[1];
-         // Tìm chương khớp slug
          const foundIndex = chapters.findIndex(c => toSlug(c.title) === chapterSlug);
-         
          if (foundIndex !== -1) {
              setCurrentChapterIndex(foundIndex);
              setView('reader');
          }
      }
-  }, [chapters]); // Chạy khi danh sách chương load xong
+  }, [chapters]);
+
+  // --- EFFECT: FETCH CONTENT KHI ĐỌC (LAZY LOAD) ---
+  useEffect(() => {
+    const fetchContent = async () => {
+        if (view !== 'reader' || !chapters[currentChapterIndex]) return;
+        
+        const currentChap = chapters[currentChapterIndex];
+        setIsLoadingContent(true);
+        setActiveChapterContent(''); // Reset trước khi load
+
+        // Trường hợp 1: Truyện cũ (Nội dung nằm ngay trong object chương)
+        if (currentChap.content) {
+            setActiveChapterContent(currentChap.content);
+            setIsLoadingContent(false);
+            return;
+        }
+
+        // Trường hợp 2: Truyện mới Import (Nội dung nằm ở collection riêng cho nhẹ)
+        try {
+            const contentRef = doc(db, 'artifacts', appId, 'public', 'data', 'novels', selectedNovel.id, 'chapter_contents', currentChap.id);
+            const contentSnap = await getDoc(contentRef);
+            
+            if (contentSnap.exists()) {
+                setActiveChapterContent(contentSnap.data().content);
+            } else {
+                setActiveChapterContent("Không tải được nội dung hoặc chương trống.");
+            }
+        } catch (err) {
+            console.error("Lỗi tải nội dung chương:", err);
+            setActiveChapterContent("Lỗi kết nối khi tải chương.");
+        } finally {
+            setIsLoadingContent(false);
+        }
+    };
+
+    fetchContent();
+  }, [currentChapterIndex, chapters, view, selectedNovel]);
+
 
   // --- ACTIONS: ADMIN ---
   const handleLogin = (e) => {
@@ -287,11 +317,19 @@ export default function App() {
     if (!newChapterTitle.trim() || !newChapterContent.trim() || !selectedNovel) return;
     setIsSubmitting(true);
     try {
-      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', selectedNovel.id, 'chapters'), {
+      // Code cũ: Lưu content chung với chapter -> Nặng
+      // Code mới: Tách ra
+      const chapRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', selectedNovel.id, 'chapters'), {
         title: newChapterTitle,
-        content: newChapterContent,
+        // content: newChapterContent, // BỎ DÒNG NÀY Ở COLLECTION CHÍNH
         createdAt: Date.now()
       });
+
+      // Lưu nội dung vào collection phụ 'chapter_contents'
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'novels', selectedNovel.id, 'chapter_contents', chapRef.id), {
+          content: newChapterContent
+      });
+
       const novelRef = doc(db, 'artifacts', appId, 'public', 'data', 'novels', selectedNovel.id);
       await updateDoc(novelRef, { chapterCount: (chapters.length + 1) });
       setNewChapterTitle(''); setNewChapterContent('');
@@ -303,7 +341,7 @@ export default function App() {
     }
   };
 
-  // --- ACTIONS: EPUB IMPORT ---
+  // --- ACTIONS: EPUB IMPORT (TỐI ƯU HIỆU NĂNG) ---
   const handleEpubImport = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -363,15 +401,22 @@ export default function App() {
               rawContent = rawContent.replace(/\n\s*\n/g, '\n\n').trim();
 
               if (rawContent.length > 50) { 
-                  setImportProgress(`Đang tải lên: ${chapTitle} (${i + 1}/${spineItems.length})`);
+                  setImportProgress(`Đang tách và tải lên: ${chapTitle} (${i + 1}/${spineItems.length})`);
                   
                   if (rawContent.length > 900000) rawContent = rawContent.substring(0, 900000) + "...(cắt)";
 
-                  await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), {
+                  // 1. Tạo Chapter Metadata (Nhẹ) -> Load danh sách cực nhanh
+                  const chapRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapters'), {
                     title: chapTitle,
-                    content: rawContent,
+                    // content: rawContent, // KHÔNG LƯU CONTENT Ở ĐÂY NỮA
                     createdAt: Date.now() + i 
                   });
+
+                  // 2. Lưu Content vào subcollection riêng (Nặng -> Chỉ tải khi đọc)
+                  await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'novels', novelRef.id, 'chapter_contents', chapRef.id), {
+                      content: rawContent
+                  });
+
                   count++;
               }
             } catch (err) {
@@ -381,7 +426,7 @@ export default function App() {
 
           await updateDoc(novelRef, { chapterCount: count });
           
-          alert(`Nhập thành công!\nTruyện: ${title}\nSố chương: ${count}`);
+          alert(`Nhập thành công!\nTruyện: ${title}\nSố chương: ${count}\n(Đã tối ưu hoá tốc độ tải)`);
           setImportProgress('');
           setIsImporting(false);
 
@@ -549,12 +594,6 @@ export default function App() {
                        {chap.title}
                     </button>
                  ))}
-                 {/* Tải thêm chương */}
-                 {selectedNovel && chapters.length < (selectedNovel.chapterCount || 9999) && (
-                    <button onClick={() => setChapterLimit(prev => prev + 50)} className="w-full p-3 rounded mt-2 text-sm font-bold text-blue-500 hover:bg-blue-500/10 flex items-center justify-center gap-2 transition-colors">
-                       <DownloadCloud size={16} /> Tải thêm 50 chương
-                    </button>
-                 )}
               </div>
            </div>
         </div>
@@ -646,7 +685,7 @@ export default function App() {
                 <div className="col-span-full text-center py-20 opacity-50"><Book size={48} className="mx-auto mb-4" /><p>Chưa có truyện nào.</p></div>
               ) : (
                 novels.map((novel) => (
-                  <div key={novel.id} onClick={() => {setSelectedNovel(novel); setView('detail'); window.scrollTo(0,0); setChapterLimit(50);}} className={`group relative rounded-xl overflow-hidden cursor-pointer transition-all hover:-translate-y-1 hover:shadow-2xl border ${cardClasses}`}>
+                  <div key={novel.id} onClick={() => {setSelectedNovel(novel); setView('detail'); window.scrollTo(0,0);}} className={`group relative rounded-xl overflow-hidden cursor-pointer transition-all hover:-translate-y-1 hover:shadow-2xl border ${cardClasses}`}>
                     <div className="aspect-[2/3] overflow-hidden relative">
                        <img src={novel.cover} alt={novel.title} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" onError={(e) => e.target.src='https://placehold.co/400x600?text=No+Cover'} />
                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent opacity-60 group-hover:opacity-40 transition-opacity"></div>
@@ -727,13 +766,6 @@ export default function App() {
                                     </div>
                                   );
                                })}
-                               
-                               {/* NÚT LOAD THÊM CHƯƠNG Ở DANH SÁCH CHÍNH */}
-                               {chapters.length < (selectedNovel.chapterCount || 9999) && (
-                                  <button onClick={() => setChapterLimit(prev => prev + 50)} className="w-full py-3 rounded mt-2 text-sm font-bold text-blue-500 hover:bg-blue-500/10 flex items-center justify-center gap-2 transition-colors border border-blue-500/20">
-                                     <DownloadCloud size={18} /> Tải thêm 50 chương tiếp theo
-                                  </button>
-                               )}
                             </div>
                          )}
                       </div>
@@ -754,19 +786,17 @@ export default function App() {
 
              <article>
                 <h2 className="text-3xl font-bold mb-8 text-center font-serif leading-tight text-blue-500">{chapters[currentChapterIndex].title}</h2>
-                <div className="prose prose-lg dark:prose-invert max-w-none font-serif leading-loose whitespace-pre-wrap text-justify">{chapters[currentChapterIndex].content}</div>
+                <div className="prose prose-lg dark:prose-invert max-w-none font-serif leading-loose whitespace-pre-wrap text-justify">
+                    {isLoadingContent ? (
+                       <div className="flex justify-center items-center py-10"><Loader className="animate-spin text-blue-500" size={32} /></div>
+                    ) : (
+                       activeChapterContent || "Nội dung trống"
+                    )}
+                </div>
              </article>
              <div className="flex justify-between items-center mt-16 pt-8 border-t border-inherit">
                 <button onClick={() => readChapter(Math.max(0, currentChapterIndex - 1))} disabled={currentChapterIndex === 0} className={`px-5 py-2.5 rounded-lg flex items-center gap-2 font-medium transition-colors ${currentChapterIndex === 0 ? 'opacity-30 cursor-not-allowed' : 'bg-black/10 dark:bg-white/10 hover:bg-blue-600 hover:text-white'}`}><ChevronLeft size={18} /> Chương trước</button>
-                
-                {/* Xử lý nút Next: Nếu là chương cuối ĐÃ LOAD thì hiện nút tải thêm */}
-                {currentChapterIndex === chapters.length - 1 && chapters.length < (selectedNovel.chapterCount || 9999) ? (
-                    <button onClick={() => setChapterLimit(prev => prev + 50)} className="px-5 py-2.5 rounded-lg flex items-center gap-2 font-medium transition-colors bg-blue-600 text-white hover:bg-blue-700">
-                       Tải chương tiếp theo <DownloadCloud size={18} />
-                    </button>
-                ) : (
-                    <button onClick={() => readChapter(Math.min(chapters.length - 1, currentChapterIndex + 1))} disabled={currentChapterIndex === chapters.length - 1} className={`px-5 py-2.5 rounded-lg flex items-center gap-2 font-medium transition-colors ${currentChapterIndex === chapters.length - 1 ? 'opacity-30 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>Chương sau <ChevronRight size={18} /></button>
-                )}
+                <button onClick={() => readChapter(Math.min(chapters.length - 1, currentChapterIndex + 1))} disabled={currentChapterIndex === chapters.length - 1} className={`px-5 py-2.5 rounded-lg flex items-center gap-2 font-medium transition-colors ${currentChapterIndex === chapters.length - 1 ? 'opacity-30 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>Chương sau <ChevronRight size={18} /></button>
              </div>
           </div>
         )}
