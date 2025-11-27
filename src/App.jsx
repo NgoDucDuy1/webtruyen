@@ -116,6 +116,9 @@ export default function App() {
   const [activeChapterContent, setActiveChapterContent] = useState('');
   const [isLoadingContent, setIsLoadingContent] = useState(false);
 
+  // --- STATE TÌM KIẾM CHƯƠNG (MỚI THÊM) ---
+  const [chapterSearchTerm, setChapterSearchTerm] = useState('');
+
   // --- INIT ---
   useEffect(() => {
     if (!auth) return;
@@ -141,6 +144,11 @@ export default function App() {
 
     return () => unsubscribe();
   }, []);
+
+  // Reset tìm kiếm khi đổi truyện
+  useEffect(() => {
+    setChapterSearchTerm('');
+  }, [selectedNovel]);
 
   const saveProgress = (novelId, chapterIndex) => {
     const newProgress = { ...readingProgress, [novelId]: chapterIndex };
@@ -588,12 +596,33 @@ export default function App() {
                  <h3 className="font-bold flex items-center gap-2"><List size={20}/> Danh sách chương</h3>
                  <button onClick={() => setShowChapterList(false)} className="p-1 hover:bg-gray-500/10 rounded"><X size={20}/></button>
               </div>
+              
+              {/* --- THANH TÌM KIẾM TRONG SIDEBAR (MỚI THÊM) --- */}
+              <div className="p-3 border-b border-inherit">
+                  <div className="flex items-center bg-black/5 dark:bg-white/5 rounded px-3 py-2">
+                      <Search size={16} className="opacity-50 mr-2"/>
+                      <input 
+                          type="text" 
+                          placeholder="Tìm chương..." 
+                          className="bg-transparent border-none outline-none text-sm w-full text-inherit"
+                          value={chapterSearchTerm}
+                          onChange={(e) => setChapterSearchTerm(e.target.value)}
+                      />
+                      {chapterSearchTerm && <button onClick={() => setChapterSearchTerm('')}><X size={14} className="opacity-50"/></button>}
+                  </div>
+              </div>
+
               <div className="flex-1 overflow-y-auto p-2">
-                 {chapters.map((chap, idx) => (
-                    <button key={chap.id} onClick={() => readChapter(idx)} className={`w-full text-left p-3 rounded mb-1 text-sm font-medium transition-colors ${idx === currentChapterIndex ? 'bg-blue-600 text-white' : 'hover:bg-gray-500/10 opacity-80 hover:opacity-100'}`}>
-                       {chap.title}
-                    </button>
-                 ))}
+                 {chapters.map((chap, idx) => {
+                    // --- LOGIC LỌC TÌM KIẾM ---
+                    if (chapterSearchTerm && !chap.title.toLowerCase().includes(chapterSearchTerm.toLowerCase())) return null;
+                    
+                    return (
+                      <button key={chap.id} onClick={() => readChapter(idx)} className={`w-full text-left p-3 rounded mb-1 text-sm font-medium transition-colors ${idx === currentChapterIndex ? 'bg-blue-600 text-white' : 'hover:bg-gray-500/10 opacity-80 hover:opacity-100'}`}>
+                         {chap.title}
+                      </button>
+                    );
+                 })}
               </div>
            </div>
         </div>
@@ -746,10 +775,29 @@ export default function App() {
                    )}
                    <div className={`${cardClasses} rounded-xl overflow-hidden border`}>
                       <div className="p-4 border-b border-inherit bg-black/5 dark:bg-white/5 flex justify-between items-center"><h3 className="font-bold flex items-center gap-2"><List size={18}/> Danh sách chương ({chapters.length})</h3></div>
+                      
+                      {/* --- THANH TÌM KIẾM TRONG CHI TIẾT TRUYỆN (MỚI THÊM) --- */}
+                      <div className="p-2 border-b border-inherit">
+                          <div className="flex items-center bg-black/5 dark:bg-white/5 rounded px-3 py-2">
+                              <Search size={16} className="opacity-50 mr-2"/>
+                              <input 
+                                  type="text" 
+                                  placeholder="Tìm số chương hoặc tên chương..." 
+                                  className="bg-transparent border-none outline-none text-sm w-full text-inherit"
+                                  value={chapterSearchTerm}
+                                  onChange={(e) => setChapterSearchTerm(e.target.value)}
+                              />
+                              {chapterSearchTerm && <button onClick={() => setChapterSearchTerm('')}><X size={14} className="opacity-50"/></button>}
+                          </div>
+                      </div>
+
                       <div className="max-h-[600px] overflow-y-auto p-2">
                          {chapters.length === 0 ? (<p className="text-center py-8 opacity-50">Chưa có chương nào.</p>) : (
                             <div className="grid grid-cols-1 gap-1">
                                {chapters.map((chap, idx) => {
+                                  // --- LOGIC LỌC TÌM KIẾM ---
+                                  if (chapterSearchTerm && !chap.title.toLowerCase().includes(chapterSearchTerm.toLowerCase())) return null;
+
                                   const isBookmarked = readingProgress[selectedNovel.id] === idx;
                                   return (
                                     <div key={chap.id} className="group flex justify-between items-center p-3 rounded hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer transition-colors">
